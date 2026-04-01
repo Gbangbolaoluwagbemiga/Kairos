@@ -1,0 +1,12 @@
+# Railway: set service "Root Directory" to `kairos-backend` (this folder).
+# This file opts into Docker build so Railpack does not need to guess the monorepo layout.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
