@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+.env.*
+*.log
+.git
+.gitignore
+scripts
+list_models.ts
+**/*.md
