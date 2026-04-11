@@ -1,5 +1,6 @@
 import { cn } from '@/lib/utils';
-import { Copy, ThumbsUp, ThumbsDown, Check, User, Bot, ExternalLink, Image as ImageIcon } from 'lucide-react';
+import { Copy, ThumbsUp, ThumbsDown, Check, User, Bot, ExternalLink, Image as ImageIcon, BookOpen } from 'lucide-react';
+import type { RagSourceRef } from '@/contexts/ChatContext';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useState, useEffect } from 'react';
@@ -27,14 +28,16 @@ interface ChatMessageProps {
   agentsUsed?: string[];
   txHashes?: Record<string, string>;
   partial?: boolean;
+  ragSources?: RagSourceRef[];
   onContinue?: () => void;
 }
 
-export function ChatMessage({ id, content, isUser, timestamp, imagePreview, agentsUsed, txHashes, partial, onContinue }: ChatMessageProps) {
+export function ChatMessage({ id, content, isUser, timestamp, imagePreview, agentsUsed, txHashes, partial, ragSources, onContinue }: ChatMessageProps) {
   const { address } = useWallet();
   const [rating, setRating]   = useState<boolean | null>(null);
   const [isRating, setIsRating] = useState(false);
   const [showPulse, setShowPulse] = useState(false);
+  const [showRag, setShowRag] = useState(false);
 
   useEffect(() => {
     if (!isUser && agentsUsed && agentsUsed.length > 0) {
@@ -99,6 +102,18 @@ export function ChatMessage({ id, content, isUser, timestamp, imagePreview, agen
         )}
 
         {/* Agents used pill row */}
+        {!isUser && ragSources && ragSources.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-1">
+            <span
+              className="inline-flex items-center gap-1 py-1 px-2 rounded-lg text-[10px] font-semibold uppercase tracking-wide bg-violet-500/15 text-violet-300 border border-violet-500/35"
+              title="This reply was augmented with retrieved excerpts from kairos-backend/rag-corpus"
+            >
+              <BookOpen className="w-3 h-3 opacity-90" />
+              RAG · {ragSources.length} source{ragSources.length > 1 ? 's' : ''}
+            </span>
+          </div>
+        )}
+
         {!isUser && agentsUsed && agentsUsed.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mb-1">
             {agentsUsed.map((agentId) => {
@@ -205,6 +220,41 @@ export function ChatMessage({ id, content, isUser, timestamp, imagePreview, agen
               >
                 {content}
               </ReactMarkdown>
+            )}
+          </div>
+        )}
+
+        {!isUser && ragSources && ragSources.length > 0 && (
+          <div className="mt-1">
+            <button
+              type="button"
+              onClick={() => setShowRag((v) => !v)}
+              className="inline-flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground/80 hover:text-violet-300/90 transition-colors"
+            >
+              <BookOpen className="w-3 h-3 opacity-70" />
+              {showRag ? 'Hide sources' : `${ragSources.length} knowledge source${ragSources.length > 1 ? 's' : ''}`}
+            </button>
+            {showRag && (
+              <ul className="mt-1.5 space-y-1.5 pl-0.5 border-l border-violet-500/20 ml-1 py-1">
+                {ragSources.map((s, i) => (
+                  <li key={`${s.source}-${i}`} className="text-[10px] text-muted-foreground/90 leading-snug list-none">
+                    <span className="text-violet-400/90 font-medium">[{s.source}]</span>{' '}
+                    <span className="opacity-80">score {s.score}</span>
+                    {s.url && (
+                      <a
+                        href={s.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="ml-1.5 inline-flex items-center gap-0.5 text-sky-400/90 hover:underline"
+                      >
+                        open
+                        <ExternalLink className="w-2.5 h-2.5 opacity-70" />
+                      </a>
+                    )}
+                    <span className="block mt-0.5 text-muted-foreground/70">{s.excerpt}</span>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
         )}

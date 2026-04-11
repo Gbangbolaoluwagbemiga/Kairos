@@ -89,6 +89,7 @@ export function useChat() {
         agentsUsed: data.agentsUsed,
         txHashes: data.x402Transactions,
         partial: !!data.partial,
+        ragSources: Array.isArray(data.ragSources) ? data.ragSources : undefined,
       };
 
       setMessages(prev => [...prev, aiMessage]);

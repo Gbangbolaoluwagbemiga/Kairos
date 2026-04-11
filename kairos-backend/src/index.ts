@@ -8,6 +8,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { config, getUsdcAsset } from "./config.js";
 import { generateResponse, initGemini } from "./services/gemini.js";
+import { warmRagIndex } from "./services/rag.js";
 import x402AgentRoutes from "./routes/x402-agent-routes.js";
 import { StellarSponsorshipService, horizonServer, networkPassphrase } from "./services/stellar.js";
 import {
@@ -247,6 +248,7 @@ app.use(express.json({ limit: '50mb' }));
 if (GEMINI_API_KEY) {
     initGemini(GEMINI_API_KEY);
     console.log("✅ Gemini AI initialized");
+    warmRagIndex();
 } else {
     console.warn("⚠️  GEMINI_API_KEY not set — AI queries will fail");
 }
@@ -535,6 +537,7 @@ app.post("/query", queryLimiter, async (req, res) => {
             requestId: rid,
             partial: !!result.partial,
             cost: "0.03", // Flat hackathon price
+            ragSources: result.ragSources,
         });
     } catch (error) {
         console.error("Query error:", error);

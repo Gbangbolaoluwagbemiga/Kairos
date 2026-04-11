@@ -67,6 +67,7 @@ const Index = () => {
                   agentsUsed={message.agentsUsed}
                   txHashes={message.txHashes}
                   partial={message.partial}
+                  ragSources={message.ragSources}
                   onContinue={() => sendMessage('continue')}
                 />
               ))}
@@ -131,7 +132,7 @@ function HeroState({ onSend, isConnected }: { onSend: (msg: string) => void; isC
             9 agents online
           </span>
           <span className="glass-btn px-3 py-1.5 text-xs text-muted-foreground">
-            <span className="payment-gradient font-semibold">$0.03</span> per query
+            <span className="payment-gradient font-semibold">~$0.03</span> UX/chat · on-chain ~0.01 USDC or 0.0001 XLM
           </span>
           <span className="glass-btn px-3 py-1.5 text-xs text-muted-foreground flex items-center gap-1.5">
             <Zap className="w-3 h-3 text-yellow-400" />

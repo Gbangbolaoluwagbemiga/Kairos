@@ -13,6 +13,7 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
+COPY rag-corpus ./rag-corpus
 EXPOSE 3001
 # Railway sets PORT; app uses process.env.PORT || 3001
 CMD ["node", "dist/index.js"]

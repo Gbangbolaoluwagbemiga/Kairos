@@ -134,7 +134,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
       {/* Footer hint */}
       <p className="text-center text-[11px] text-muted-foreground/50 mt-2">
         <Zap className="w-2.5 h-2.5 inline mr-1 text-yellow-400/60" />
-        $0.03 per query via Stellar x402 · Kairos can make mistakes
+        ~0.01 USDC per agent (else 0.0001 XLM)· Kairos can make mistakes
       </p>
     </div>
   );

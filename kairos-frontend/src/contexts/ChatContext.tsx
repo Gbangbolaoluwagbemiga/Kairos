@@ -4,6 +4,14 @@ import { useWallet } from './WalletContext';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
+export interface RagSourceRef {
+    source: string;
+    score: number;
+    excerpt: string;
+    /** Original page URL when retrieved from the web */
+    url?: string;
+}
+
 export interface Message {
     id: string;
     content: string;
@@ -15,6 +23,7 @@ export interface Message {
     imagePreview?: string;
     agentsUsed?: string[];
     partial?: boolean;
+    ragSources?: RagSourceRef[];
 }
 
 export interface ChatSession {

@@ -1,0 +1,7 @@
+# One HTTPS URL per line. Fetched at index time and embedded with local .md files.
+# Lines starting with # are ignored.
+
+https://developers.stellar.org/docs
+https://developers.stellar.org/docs/build/smart-contracts/overview
+https://ai.google.dev/gemini-api/docs/embeddings
+https://arxiv.org/abs/1706.03762

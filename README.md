@@ -129,6 +129,10 @@ Optional addresses:
 - `PERP_STATS_X402_ADDRESS`
 - `STELLAR_SCOUT_X402_ADDRESS`
 
+### RAG (optional)
+
+When enabled, the backend builds a **hybrid index**: local `rag-corpus/*.md` **plus** HTTPS pages listed in **`rag-corpus/sources.urls`** (one URL per line) and/or **`KAIROS_RAG_URLS`** (comma-separated). Those URLs are fetched at index time (docs, arXiv abstract pages, etc.), converted to plain text, chunked, and embedded with Gemini **`gemini-embedding-001`** (override with `KAIROS_RAG_EMBED_MODEL`). Retrieved chunks include the **canonical URL** when the hit came from the web so answers can cite real sources. Only **https** origins are allowed (basic SSRF protection). Tune fetch with `KAIROS_RAG_FETCH_TIMEOUT_MS`, `KAIROS_RAG_FETCH_MAX_BYTES`, `KAIROS_RAG_FETCH_GAP_MS`. Live market data still comes from tools. Disable RAG with `KAIROS_RAG=0`. **`KAIROS_RAG_STRICT=1` (default)** runs RAG only when the user message looks like a **Kairos / x402 / deployment / docs** question (so generic Stellar or market questions do not always surface the same web docs). Set **`KAIROS_RAG_STRICT=0`** to always attempt vector retrieval. Other knobs: `KAIROS_RAG_MIN_SCORE` (default `0.32`), `KAIROS_RAG_TOP_K` (default `24`, max ranked chunks scanned before **deduping by URL / file**), `KAIROS_RAG_MAX_CHUNKS`, `KAIROS_RAG_BUDGET_MS`, `KAIROS_RAG_FILES`, `KAIROS_RAG_DIR`.
+
 ### Frontend Environment (`kairos-frontend/.env`)
 
 - `VITE_API_URL` (for example `http://localhost:3001` for local)

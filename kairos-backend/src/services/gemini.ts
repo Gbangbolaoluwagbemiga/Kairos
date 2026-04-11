@@ -17,6 +17,7 @@ import * as tokenomicsService from "./tokenomics-service.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { horizonServer, networkPassphrase, submitTransactionWithTimeoutRecovery } from "./stellar.js";
 import { AgentRegistryService } from "./agent-registry.js";
+import { retrieveRagAugmentation, type RagSource } from "./rag.js";
 
 /**
  * Treasury must submit txs **one at a time**. Parallel Gemini tool calls used to race:
@@ -313,6 +314,12 @@ You facilitate a multi-agent economy where agents pay each other using x402 USDC
 - You operate exclusively in the crypto/blockchain/DeFi space, with a special focus on STELLAR and SOROBAN.
 - Use Stellar-native terminology (Assets, Trustlines, SDEX, Soroban).
 - When users mention "XLM" or "Stellar", use your Stellar-specific tools.
+
+**On-chain x402 payments (do not invent numbers):**
+- Treasury-to-agent payments are typically **~0.01 USDC** per specialist invocation when the USDC path works (registry price).
+- If USDC cannot be used, the implementation may pay **0.0001 XLM** instead—block explorers show **XLM**, not USDC, for those txs.
+- UI copy may say **~$0.03 per chat** as a **bundled UX estimate**; that is **not** the literal amount of every single Stellar operation.
+- Never state random amounts like **"0.1 USDC"** unless quoting an explicit config value the user provided.
 
 **Your Capabilities:**
 - PRICE ORACLE: Real-time prices for any crypto (XLM, USDC, BTC, ETH, etc.) via CoinGecko.
@@ -957,6 +964,8 @@ export interface GenerateResponseResult {
     agentsUsed: string[];
     x402Transactions: Record<string, string>; // agentId -> txHash for x402 payments
     partial?: boolean;
+    /** Populated when RAG retrieved corpus excerpts for this turn */
+    ragSources?: RagSource[];
 }
 
 export async function generateResponse(
@@ -967,6 +976,20 @@ export async function generateResponse(
 ): Promise<GenerateResponseResult> {
     if (!genAI) {
         throw new Error("Gemini not initialized. Call initGemini first.");
+    }
+
+    let ragSources: RagSource[] | undefined;
+    let augmentedUserText = prompt || "";
+    if (!imageData && (prompt || "").trim().length >= 8) {
+        try {
+            const rag = await retrieveRagAugmentation(prompt);
+            if (rag) {
+                augmentedUserText = `${rag.prefixText}\n\n${(prompt || "").trim()}`;
+                ragSources = rag.sources;
+            }
+        } catch (e) {
+            console.warn("[RAG] augmentation skipped:", e);
+        }
     }
 
     // Track which agents are called
@@ -1151,9 +1174,9 @@ export async function generateResponse(
             });
         }
 
-        // Add text prompt
+        // Add text prompt (may include retrieved knowledge prefix from RAG)
         if (prompt) {
-            currentMessageParts.push({ text: prompt });
+            currentMessageParts.push({ text: augmentedUserText });
         } else if (imageData) {
             currentMessageParts.push({ text: "Analyze this image and describe what you see. Provide helpful insights." });
         }
@@ -1247,6 +1270,7 @@ export async function generateResponse(
                 agentsUsed: Array.from(agentsUsed),
                 x402Transactions,
                 partial: false,
+                ragSources,
             };
         }
 
@@ -1263,6 +1287,7 @@ export async function generateResponse(
                 agentsUsed: Array.from(agentsUsed),
                 x402Transactions,
                 partial: false,
+                ragSources,
             };
         }
 
@@ -1280,6 +1305,7 @@ export async function generateResponse(
             agentsUsed: Array.from(agentsUsed),
             x402Transactions,
             partial: clientPartial,
+            ragSources,
         };
     } catch (error: any) {
         console.error(`[Gemini] ⚠️ Error generating response:`, error?.message);
@@ -1288,7 +1314,8 @@ export async function generateResponse(
             return {
                 response: "Kairos is currently experiencing high demand. Please try again in a few moments! ⚡️",
                 agentsUsed: [],
-                x402Transactions: {}
+                x402Transactions: {},
+                ragSources,
             };
         }
         
@@ -1296,7 +1323,8 @@ export async function generateResponse(
             return {
                 response: "Kairos is receiving too many requests. Please wait about 30 seconds for the quota to reset! ⏳",
                 agentsUsed: [],
-                x402Transactions: {}
+                x402Transactions: {},
+                ragSources,
             };
         }
 
