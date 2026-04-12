@@ -43,16 +43,24 @@ CREATE TABLE IF NOT EXISTS message_ratings (
 
 CREATE INDEX IF NOT EXISTS idx_message_ratings_agent ON message_ratings(agent_id);
 
--- Query Logs (agent response times & usage counts)
+-- Query Logs (agent response times, usage counts, A2A payments)
 CREATE TABLE IF NOT EXISTS query_logs (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    -- Logical dedup key (requestId or requestId-a2a-in/out-agentId). Prevents double-inserts.
+    logical_id TEXT UNIQUE,
     agent_id TEXT,
     response_time_ms INTEGER,
     tx_hash TEXT,
+    -- 'credit' = payment received (treasury→agent or A2A→agent)
+    -- 'debit'  = payment sent (agent→sub-agent A2A)
+    direction TEXT DEFAULT 'credit',
+    -- Actual USDC amount for this entry (0.01 for standard, 0.005 for A2A)
+    nominal_usd NUMERIC(12, 7) DEFAULT 0.0100000,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_query_logs_agent ON query_logs(agent_id);
+CREATE INDEX IF NOT EXISTS idx_query_logs_direction ON query_logs(agent_id, direction);
 
 -- Row Level Security
 ALTER TABLE chat_sessions    ENABLE ROW LEVEL SECURITY;

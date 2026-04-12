@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ArrowDownLeft, ExternalLink } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const STELLAR_EXPERT_TX = (hash: string) =>
@@ -16,6 +16,8 @@ interface Activity {
   /** Nominal USDC-equivalent credit (dashboard math), not always what the tx used */
   nominalUsd?: number;
   txHash?: string;
+  /** 'credit' = received payment (default), 'debit' = sent A2A payment */
+  direction?: 'credit' | 'debit';
   /** Parsed from Horizon when txHash is present */
   onChain?: { code: string; amount: string } | null;
 }
@@ -83,10 +85,15 @@ export function ActivityFeed({ agentId }: ActivityFeedProps) {
           activities.map((activity) => {
             const nominal = activity.nominalUsd ?? activity.amount ?? 0.01;
             const ageMs = Date.now() - new Date(activity.timestamp).getTime();
-            const isVeryRecent = ageMs < 2 * 60 * 1000; // < 2 min
-            const creditLine = activity.onChain
-              ? `+${activity.onChain.amount} ${activity.onChain.code}`
-              : `+${Number(nominal).toFixed(2)} USDC`;
+            const isVeryRecent = ageMs < 2 * 60 * 1000;
+            const isDebit = activity.direction === 'debit';
+            const onChainAmt = activity.onChain
+              ? `${activity.onChain.amount} ${activity.onChain.code}`
+              : `${Number(nominal).toFixed(7)} USDC`;
+            const amountLine = isDebit ? `-${onChainAmt}` : `+${onChainAmt}`;
+            const amountColor = isDebit ? 'text-rose-400' : 'text-emerald-400';
+            const label = isDebit ? 'A2A sent' : activity.type;
+
             return (
             <div
               key={activity.id}
@@ -95,12 +102,14 @@ export function ActivityFeed({ agentId }: ActivityFeedProps) {
               <div className="flex items-center gap-4 min-w-0">
                 <div className={cn(
                   "w-9 h-9 rounded-full flex items-center justify-center bg-secondary shrink-0",
-                  "text-emerald-400"
+                  isDebit ? "text-rose-400" : "text-emerald-400"
                 )}>
-                  <ArrowDownLeft className="w-4 h-4" />
+                  {isDebit
+                    ? <ArrowUpRight className="w-4 h-4" />
+                    : <ArrowDownLeft className="w-4 h-4" />}
                 </div>
                 <div className="min-w-0">
-                  <p className="text-foreground text-sm font-medium capitalize">{activity.type}</p>
+                  <p className="text-foreground text-sm font-medium capitalize">{label}</p>
                   <p className="text-xs text-muted-foreground">
                     {formatDate(activity.timestamp)} • {(activity.responseTimeMs / 1000).toFixed(1)}s response
                   </p>
@@ -108,16 +117,16 @@ export function ActivityFeed({ agentId }: ActivityFeedProps) {
               </div>
               <div className="flex flex-col items-stretch sm:items-end gap-2 sm:min-w-[200px]">
                 <div
-                  className="font-semibold text-sm text-emerald-400 text-right"
+                  className={cn("font-semibold text-sm text-right", amountColor)}
                   title={
                     activity.onChain
-                      ? 'On-chain confirmed payment amount'
+                      ? 'On-chain confirmed amount'
                       : activity.txHash
-                        ? 'Estimated amount — tx link appears once confirmed on-chain'
-                        : 'Confirmed USDC payment to agent'
+                        ? 'Estimated — tx confirms shortly'
+                        : isDebit ? 'A2A payment sent to sub-agent' : 'USDC payment received'
                   }
                 >
-                  {creditLine}
+                  {amountLine}
                 </div>
                 {activity.txHash ? (
                   <a

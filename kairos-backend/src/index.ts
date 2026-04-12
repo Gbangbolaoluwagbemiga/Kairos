@@ -27,6 +27,8 @@ import {
     getTotalUsageCount,
     getAllAgentStats,
     getAgentStatsById,
+    getAgentTreasuryBalance,
+    getPersistedLogicalIdsForAgent,
     getRecentQueries
 } from "./services/supabase.js";
 
@@ -38,6 +40,10 @@ type LocalQueryLog = {
     responseTimeMs: number;
     createdAt: string;
     txHash?: string;
+    /** Override the nominal USD amount shown before Horizon confirms (e.g. 0.005 for A2A) */
+    nominalUsd?: number;
+    /** 'credit' (default) = received payment, 'debit' = sent A2A payment */
+    direction?: 'credit' | 'debit';
 };
 
 const AGENT_PRICING: Record<string, number> = {
@@ -62,6 +68,8 @@ function toRatingKey(messageId: string, wallet: string) {
 }
 
 function pushLocalQueryLog(entry: LocalQueryLog) {
+    // Deduplicate by id — never log the same entry twice
+    if (localQueryLogs.some(q => q.id === entry.id)) return;
     localQueryLogs.unshift(entry);
     // Keep memory bounded for long dev sessions.
     if (localQueryLogs.length > 2000) {
@@ -75,8 +83,9 @@ function recordReceipt(requestId: string, agentId: string, txHash: string) {
     receiptStore.set(requestId, existing);
 
     // Also backfill local activity rows for dashboards.
+    // row.id is usually `logical_id` (e.g. `rid-credit-oracle` or `rid-a2a-out-news`), so match by prefix
     for (const row of localQueryLogs) {
-        if (row.id === requestId && row.agentId === agentId) {
+        if (row.id.startsWith(requestId) && row.agentId === agentId) {
             row.txHash = txHash;
         }
     }
@@ -108,10 +117,13 @@ function x402MemoPrefixForDashboardAgent(agentId: string): string {
 
 type ActivityRow = {
     id: string;
+    logicalId?: string;
     agentId: string;
     responseTimeMs: number;
     createdAt: string;
     txHash?: string | null;
+    nominalUsd?: number;
+    direction?: 'credit' | 'debit';
 };
 
 /**
@@ -518,19 +530,61 @@ app.post("/query", queryLimiter, async (req, res) => {
         // Log agent usage via Supabase (asynchronously, don't block response)
         try {
             const allAgentsToLog = new Set<string>(result.agentsUsed);
+            // Sub-agents paid via A2A must NOT also get a treasury credit — that would double-count.
+            const a2aReceivers = new Set((result.a2aPayments || []).map(p => p.to));
 
+            const logTs = new Date().toISOString();
             for (const agentId of allAgentsToLog) {
+                // Skip sub-agents here — they get credited via the A2A loop below
+                if (a2aReceivers.has(agentId)) continue;
                 const txHash = resolveTxHashForAgent(result.x402Transactions, agentId);
+                const nominalUsd = AGENT_PRICING[agentId] ?? 0.01;
+                const logId = `${rid}-credit-${agentId}`;
                 pushLocalQueryLog({
-                    id: rid,
+                    id: logId,
                     agentId,
                     responseTimeMs,
-                    createdAt: new Date().toISOString(),
+                    createdAt: logTs,
                     txHash,
+                    nominalUsd,
+                    direction: 'credit',
                 });
-                // We use Promise.resolve().then to avoid blocking the API response while logging to DB
-                logQueryTime(responseTimeMs, agentId, txHash)
+                logQueryTime(responseTimeMs, agentId, txHash, 'credit', nominalUsd, logId)
                     .catch(err => console.error(`[Supabase] Deferred logging failed for ${agentId}:`, err));
+            }
+
+            // Log A2A payments persistently for both sides:
+            // - sub-agent credit (received 0.005 USDC)
+            // - primary agent debit (sent 0.005 USDC)
+            for (const a2a of (result.a2aPayments || [])) {
+                const ts = new Date().toISOString();
+                const a2aAmt = parseFloat(a2a.amount) || 0.005;
+                const inId  = `${rid}-a2a-in-${a2a.to}`;
+                const outId = `${rid}-a2a-out-${a2a.from}`;
+
+                pushLocalQueryLog({
+                    id: inId,
+                    agentId: a2a.to,
+                    responseTimeMs,
+                    createdAt: ts,
+                    txHash: a2a.txHash,
+                    nominalUsd: a2aAmt,
+                    direction: 'credit',
+                });
+                pushLocalQueryLog({
+                    id: outId,
+                    agentId: a2a.from,
+                    responseTimeMs,
+                    createdAt: ts,
+                    txHash: a2a.txHash,
+                    nominalUsd: a2aAmt,
+                    direction: 'debit',
+                });
+                // Persist both sides to Supabase so balance survives restarts
+                logQueryTime(responseTimeMs, a2a.to,   a2a.txHash, 'credit', a2aAmt, inId)
+                    .catch(err => console.error(`[Supabase] A2A credit log failed:`, err));
+                logQueryTime(responseTimeMs, a2a.from, a2a.txHash, 'debit',  a2aAmt, outId)
+                    .catch(err => console.error(`[Supabase] A2A debit log failed:`, err));
             }
         } catch (logError) {
             console.error("[Supabase] ⚠️ Telemetry logging failed (non-critical):", logError);
@@ -599,21 +653,34 @@ app.get("/providers", async (req, res) => {
 
 // Dashboard Stats
 app.get("/dashboard/stats", async (req, res) => {
-    const { agentId } = req.query;
+    const rawId = req.query.agentId;
+    const agentId = (Array.isArray(rawId) ? rawId[0] : rawId) as string | undefined;
     try {
         if (agentId) {
-            const stats = await getAgentStatsById(agentId as string);
+            const [stats, dbBalance, persistedLogicalIds] = await Promise.all([
+                getAgentStatsById(agentId),
+                getAgentTreasuryBalance(agentId),
+                getPersistedLogicalIdsForAgent(agentId),
+            ]);
+
             const localAgentLogs = localQueryLogs.filter(q => q.agentId === agentId);
-            const localUsage = localAgentLogs.length;
-            const localTreasury = localAgentLogs.reduce((sum, q) => sum + (AGENT_PRICING[q.agentId] ?? 0.01), 0);
-            const dbTreasury = (stats?.usageCount || 0) * (AGENT_PRICING[agentId as string] ?? 0.01);
-            const treasury = Math.max(localTreasury, dbTreasury);
+            // Rows in memory that are not yet visible in Supabase (insert lag / failed upsert / timeouts)
+            const localDelta = localAgentLogs
+                .filter(q => q.id && !persistedLogicalIds.has(q.id))
+                .reduce((sum, q) => {
+                    const def = q.direction === 'debit' ? 0.005 : (AGENT_PRICING[agentId] ?? 0.01);
+                    const amt = q.nominalUsd != null && q.nominalUsd > 0 ? q.nominalUsd : def;
+                    return q.direction === 'debit' ? sum - amt : sum + amt;
+                }, 0);
+
+            const treasury = dbBalance + localDelta;
+            const usageCount = stats?.usageCount || localAgentLogs.filter(q => q.direction !== 'debit').length;
 
             res.json({
                 agentId,
-                tasksCompleted: (stats?.usageCount || 0) || localUsage,
+                tasksCompleted: usageCount,
                 rating: stats?.rating || 0,
-                treasury: treasury.toFixed(2),
+                treasury: treasury.toFixed(3),
             });
         } else {
             const usageCount = await getTotalUsageCount();
@@ -639,7 +706,8 @@ app.get("/dashboard/activity", async (req, res) => {
             responseTimeMs: q.responseTimeMs,
             timestamp: q.createdAt,
             txHash: q.txHash,
-            nominalUsd: AGENT_PRICING[q.agentId] ?? 0.01,
+            nominalUsd: q.nominalUsd ?? (AGENT_PRICING[q.agentId] ?? 0.01),
+            direction: q.direction ?? 'credit',
             onChain: null as { code: string; amount: string } | null,
         }));
         for (const row of rows) {
@@ -652,27 +720,45 @@ app.get("/dashboard/activity", async (req, res) => {
 
     try {
         const queries = await getRecentQueries(queryAgentId, queryLimit);
-        const localFallback = localQueryLogs
+        const localRows = localQueryLogs
             .filter(q => q.agentId === queryAgentId)
-            .slice(0, queryLimit)
             .map(q => ({
                 id: q.id,
                 agentId: q.agentId,
                 responseTimeMs: q.responseTimeMs,
                 createdAt: q.createdAt,
                 txHash: q.txHash || null,
+                nominalUsd: q.nominalUsd,
+                direction: q.direction,
             }));
-        const source = queries.length > 0 ? queries : localFallback;
-        const localById = new Map(localFallback.map(q => [q.id, q]));
-        const localByTimestamp = new Map(localFallback.map(q => [`${q.agentId}:${q.createdAt}`, q]));
-        const enriched: ActivityRow[] = source.map(q => {
-            if (q.txHash) return { ...q, txHash: q.txHash };
-            const byId = localById.get(q.id);
-            if (byId?.txHash) return { ...q, txHash: byId.txHash };
-            const byTs = localByTimestamp.get(`${q.agentId}:${q.createdAt}`);
-            if (byTs?.txHash) return { ...q, txHash: byTs.txHash };
-            return { ...q, txHash: q.txHash ?? null };
+
+        const localById = new Map(localRows.map(q => [q.id, q]));
+
+        // Build enriched list: start with Supabase rows (enriched with local txHash/direction),
+        // then prepend any local-only rows (e.g. A2A debits) not in Supabase.
+        const dbEnriched: ActivityRow[] = queries.map(q => {
+            const matchKey = q.logicalId || q.id;
+            const local = localById.get(matchKey);
+            return {
+                ...q,
+                id: matchKey, // Use logical ID if available for UI consistency
+                logicalId: q.logicalId,
+                // Prefer local txHash if DB row doesn't have one yet
+                txHash: q.txHash || local?.txHash || null,
+                // direction and nominalUsd come from DB (most authoritative); fall back to local
+                direction: q.direction ?? local?.direction ?? 'credit',
+                nominalUsd: q.nominalUsd ?? local?.nominalUsd,
+            };
         });
+
+        // Use logicalId or fallback id to prevent duplicates
+        const dbIds = new Set(queries.map(q => q.logicalId || q.id));
+        const localOnly = localRows.filter(q => !dbIds.has(q.id));
+
+        // Merge: local-only entries first (most recent), then DB entries, capped at limit
+        const enriched: ActivityRow[] = [...localOnly, ...dbEnriched]
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+            .slice(0, queryLimit);
 
         await enrichActivityTxHashesFromHorizon(enriched, queryAgentId);
 

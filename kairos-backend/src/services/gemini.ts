@@ -25,6 +25,24 @@ import { retrieveRagAugmentation, type RagSource } from "./rag.js";
  */
 let treasuryPaymentQueue: Promise<unknown> = Promise.resolve();
 
+/** Retry a flaky async call up to `attempts` times with exponential backoff. */
+async function withRetry<T>(fn: () => Promise<T>, attempts = 3, baseDelayMs = 1000): Promise<T> {
+    let lastErr: unknown;
+    for (let i = 0; i < attempts; i++) {
+        try {
+            return await fn();
+        } catch (err: any) {
+            lastErr = err;
+            const isFetchError = err?.message?.includes('fetch failed') || err?.message?.includes('ECONNRESET') || err?.message?.includes('timeout');
+            if (!isFetchError || i === attempts - 1) throw err;
+            const delay = baseDelayMs * 2 ** i;
+            console.warn(`[Gemini] Attempt ${i + 1} failed (${err.message}). Retrying in ${delay}ms…`);
+            await new Promise(r => setTimeout(r, delay));
+        }
+    }
+    throw lastErr;
+}
+
 /**
  * Cache: agent address → whether it has USDC trustline.
  * Populated on first payment; saves one Horizon loadAccount per subsequent call.
@@ -39,6 +57,7 @@ function runTreasurySerialized<T>(fn: () => Promise<T>): Promise<T> {
     );
     return next;
 }
+
 
 /**
  * 🤝 Agent-to-Agent Payment (A2A)
@@ -71,65 +90,49 @@ export interface A2APayment {
 // Track a2a payments for the current request
 let currentA2APayments: A2APayment[] = [];
 
+// Deterministic orchestrator priority — highest rank = always the primary payer.
+// Prevents race conditions from Set insertion order deciding who pays whom.
+const AGENT_ORCHESTRATOR_PRIORITY: Record<string, number> = {
+    oracle:         10, // Price Oracle: highest — data backbone
+    protocol:        9,
+    bridges:         8,
+    "stellar-dex":   7,
+    "stellar-scout": 6,
+    perp:            5,
+    tokenomics:      4,
+    yield:           3,
+    news:            2, // News Scout: always a sub-agent, never the payer
+};
+
+function pickPrimaryAgent(agents: string[]): string {
+    return agents.reduce((best, a) =>
+        (AGENT_ORCHESTRATOR_PRIORITY[a] ?? 0) > (AGENT_ORCHESTRATOR_PRIORITY[best] ?? 0) ? a : best
+    );
+}
+
 async function sendAgentToAgentPayment(
     fromAgentId: string,
     toAgentId: string,
     label: string
 ): Promise<A2APayment | undefined> {
-    const toMeta = await AgentRegistryService.getAgent(toAgentId);
+    const [fromMeta, toMeta] = await Promise.all([
+        AgentRegistryService.getAgent(fromAgentId),
+        AgentRegistryService.getAgent(toAgentId),
+    ]);
     if (!toMeta?.owner) {
         console.warn(`[A2A] ⚠️ Could not resolve address for sub-agent: ${toAgentId}`);
         return undefined;
     }
 
-    // Try paying from the agent's own wallet first (true peer-to-peer A2A).
-    // If balance is too low (agent hasn't accumulated yet), fall back to
-    // treasury-sponsored A2A — the memo records the delegation chain on-chain.
-    const fromSecret = AGENT_SECRETS[fromAgentId];
+    const usdcAsset = new StellarSdk.Asset(config.stellar.usdcCode, config.stellar.usdcIssuer);
+    const amount = "0.0050000";
+    const memoText = `a2a:${fromAgentId.slice(0, 7)}>${toAgentId.slice(0, 7)}`;
 
+    // Treasury-sponsored A2A: the memo records the delegation chain on-chain (auditable).
+    // We skip the direct agent wallet attempt entirely — it causes sequence conflicts when
+    // the agent's account was loaded while a treasury tx was in-flight, causing tx_bad_seq.
+    // The treasury already handles all payments serially, so this is safe and fast.
     return runTreasurySerialized(async () => {
-        const usdcAsset = new StellarSdk.Asset(config.stellar.usdcCode, config.stellar.usdcIssuer);
-        const amount = "0.0050000";
-        const memoText = `a2a:${fromAgentId.slice(0, 7)}>${toAgentId.slice(0, 7)}`;
-
-        // Attempt 1: direct agent-to-agent payment
-        if (fromSecret) {
-            try {
-                const fromKeypair = StellarSdk.Keypair.fromSecret(fromSecret);
-                const fromAccount = await horizonServer.loadAccount(fromKeypair.publicKey());
-                const usdcBalance = fromAccount.balances.find(
-                    (b: any) => b.asset_code === config.stellar.usdcCode && b.asset_issuer === config.stellar.usdcIssuer
-                );
-                const balance = parseFloat((usdcBalance as any)?.balance || '0');
-
-                if (balance >= 0.005) {
-                    const tx = new StellarSdk.TransactionBuilder(fromAccount, {
-                        fee: StellarSdk.BASE_FEE,
-                        networkPassphrase,
-                    })
-                        .addOperation(StellarSdk.Operation.payment({
-                            destination: toMeta.owner,
-                            asset: usdcAsset,
-                            amount,
-                        }))
-                        .addMemo(StellarSdk.Memo.text(memoText))
-                        .setTimeout(60)
-                        .build();
-
-                    tx.sign(fromKeypair);
-                    const result = await submitTransactionWithTimeoutRecovery(tx);
-                    console.log(`[A2A] ✅ ${fromAgentId} → ${toAgentId} (${amount} USDC, direct): ${result.hash}`);
-                    const payment: A2APayment = { from: fromAgentId, to: toAgentId, amount, txHash: result.hash, label };
-                    currentA2APayments.push(payment);
-                    return payment;
-                }
-                console.log(`[A2A] ℹ️ ${fromAgentId} USDC balance ${balance} too low — treasury-sponsored A2A`);
-            } catch (err: any) {
-                console.log(`[A2A] ℹ️ Direct A2A failed (${err?.message}) — falling back to treasury-sponsored`);
-            }
-        }
-
-        // Attempt 2: treasury pays sub-agent on behalf of primary agent
         try {
             const treasurySecret = config.stellar.sponsorSecret;
             if (!treasurySecret?.startsWith('S')) return undefined;
@@ -146,13 +149,13 @@ async function sendAgentToAgentPayment(
                     amount,
                 }))
                 .addMemo(StellarSdk.Memo.text(memoText))
-                .setTimeout(60)
+                .setTimeout(30)
                 .build();
 
             tx.sign(treasuryKeypair);
-            const result = await submitTransactionWithTimeoutRecovery(tx);
-            console.log(`[A2A] ✅ ${fromAgentId} → ${toAgentId} (${amount} USDC, treasury-sponsored): ${result.hash}`);
-            const payment: A2APayment = { from: fromAgentId, to: toAgentId, amount, txHash: result.hash, label };
+            const result = await horizonServer.submitTransaction(tx);
+            console.log(`[A2A] ✅ ${fromAgentId} → ${toAgentId} (${amount} USDC): ${(result as any).hash}`);
+            const payment: A2APayment = { from: fromAgentId, to: toAgentId, amount, txHash: (result as any).hash, label };
             currentA2APayments.push(payment);
             return payment;
         } catch (err: any) {
@@ -465,12 +468,11 @@ You facilitate a multi-agent economy where agents pay each other using x402 USDC
 - Use Stellar-native terminology (Assets, Trustlines, SDEX, Soroban).
 - When users mention "XLM" or "Stellar", use your Stellar-specific tools.
 
-**On-chain x402 payments (do not invent numbers):**
-- Treasury-to-agent payments are **0.01 USDC** per specialist invocation. Agent accounts are pre-configured with USDC trustlines so USDC payments should now succeed.
-- If USDC still fails, the fallback is **0.001 XLM** — block explorers show **XLM**, not USDC, for those txs.
-- UI copy says **~$0.03 per chat** as a **bundled UX estimate**, not the literal per-operation amount.
-- **Never** state "0.1 USDC" or any invented amount.
-- On Stellar Expert, **Max Fee** (0.00001 XLM) is the **network fee to validators**, NOT the payment to the agent. The agent receives the payment operation amount (0.01 USDC or 0.001 XLM) which is a separate field in the transaction.
+**On-chain x402 payments (NEVER mention in responses):**
+- Payments happen automatically behind the scenes — the UI shows them as badges.
+- **NEVER** include any sentence about payments, USDC amounts, or "paid via x402" in your response text. The payment UI handles all disclosure.
+- **Never** state any payment amounts or say agents "were paid", "received", or "earned" anything.
+- Do not add any payment footnote, receipt line, or financial disclosure at the end of responses.
 
 **Your Capabilities:**
 - PRICE ORACLE: Real-time prices for any crypto (XLM, USDC, BTC, ETH, etc.) via CoinGecko.
@@ -1352,7 +1354,7 @@ export async function generateResponse(
         }
 
         // Send initial message
-        let result = await chat.sendMessage(currentMessageParts);
+        let result = await withRetry(() => chat.sendMessage(currentMessageParts));
         let response = result.response;
         let functionCalls = response.functionCalls();
 
@@ -1378,7 +1380,7 @@ export async function generateResponse(
 
             // Send function responses back to model
             if (functionResponses.length > 0) {
-                result = await chat.sendMessage(functionResponses);
+                result = await withRetry(() => chat.sendMessage(functionResponses));
                 response = result.response;
                 functionCalls = response.functionCalls();
             } else {
@@ -1387,18 +1389,23 @@ export async function generateResponse(
         }
 
         // ─── Agent-to-Agent Sub-Payments ────────────────────────────────────────
-        // When multiple specialist agents collaborated, the primary agent pays sub-agents.
-        // This demonstrates true autonomous agent commerce: agents earning AND spending on Stellar.
+        // Fire A2A payments with a short timeout window — if they settle within
+        // 6s they're included in the response; otherwise they complete in background
+        // and the frontend polls /receipts for the txHash.
         const usedAgents = Array.from(agentsUsed);
         if (usedAgents.length >= 2) {
-            const primaryAgent = usedAgents[0];
-            const subAgents = usedAgents.slice(1);
+            const primaryAgent = pickPrimaryAgent(usedAgents);
+            const subAgents = usedAgents.filter(a => a !== primaryAgent);
             console.log(`[A2A] 🤝 ${primaryAgent} coordinating with: ${subAgents.join(', ')}`);
-            // Fire A2A payments in background — don't block response
-            for (const subAgent of subAgents) {
+            const a2aPromises = subAgents.map(subAgent =>
                 sendAgentToAgentPayment(primaryAgent, subAgent, `coord:${subAgent}`)
-                    .catch(e => console.error(`[A2A] background payment error:`, e));
-            }
+                    .catch(e => { console.error(`[A2A] payment error:`, e); return undefined; })
+            );
+            // Race: include in response if done within 12s, else complete in background
+            await Promise.race([
+                Promise.all(a2aPromises),
+                new Promise<void>(r => setTimeout(r, 12000)),
+            ]);
         }
         // ────────────────────────────────────────────────────────────────────────
 
@@ -1428,19 +1435,13 @@ export async function generateResponse(
             const ath = d.ath != null ? `$${Number(d.ath).toLocaleString(undefined, { maximumFractionDigits: 6 })}` : "N/A";
             const athDate = d.athDate ? new Date(d.athDate).toLocaleDateString() : "N/A";
 
-            const txHash = x402Transactions["oracle"];
-            const txLine = txHash
-                ? `\n\n**On-chain receipt:** \`${txHash}\` (Stellar testnet)`
-                : "\n\n**On-chain receipt:** pending (Horizon delay)";
-
             return {
                 response:
                     `The current price of **${d.name || sym} (${(d.symbol || sym).toUpperCase()})** is **${price} ${d.currency || "USD"}**.\n\n` +
                     `- **24h change**: ${change}\n` +
                     `- **Market cap**: ${mcap}\n` +
                     `- **24h volume**: ${vol}\n` +
-                    `- **All-time high (ATH)**: ${ath} (reached ${athDate})` +
-                    txLine,
+                    `- **All-time high (ATH)**: ${ath} (reached ${athDate})`,
                 agentsUsed: Array.from(agentsUsed),
                 x402Transactions,
                 a2aPayments: currentA2APayments,

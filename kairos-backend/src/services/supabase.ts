@@ -292,18 +292,31 @@ export async function getAgentRating(): Promise<{ rating: number; totalRatings: 
 
 // ============ Query Logs (Response Time) ============
 
-export async function logQueryTime(responseTimeMs: number, agentId?: string, txHash?: string): Promise<boolean> {
+export async function logQueryTime(
+    responseTimeMs: number,
+    agentId?: string,
+    txHash?: string,
+    direction: 'credit' | 'debit' = 'credit',
+    nominalUsd: number = 0.01,
+    logicalId?: string,
+): Promise<boolean> {
     if (!supabase) return false;
 
-    const { error } = await supabase
-        .from('query_logs')
-        .insert({
-            response_time_ms: responseTimeMs,
-            agent_id: agentId || null,
-            tx_hash: txHash || null
-        });
+    const row: Record<string, unknown> = {
+        response_time_ms: responseTimeMs,
+        agent_id: agentId || null,
+        tx_hash: txHash || null,
+        direction,
+        nominal_usd: nominalUsd,
+    };
+    if (logicalId) row.logical_id = logicalId;
+
+    // Plain INSERT — PostgREST upsert on partial unique(logical_id) often fails silently in the wild.
+    // Duplicate logical_id → 23505; treat as success (idempotent retries).
+    const { error } = await supabase.from('query_logs').insert(row);
 
     if (error) {
+        if ((error as { code?: string }).code === '23505') return true;
         console.error('[Supabase] Failed to log query time:', error);
         return false;
     }
@@ -361,6 +374,9 @@ export interface RecentQuery {
     responseTimeMs: number;
     createdAt: string;
     txHash: string | null;
+    direction?: 'credit' | 'debit';
+    nominalUsd?: number;
+    logicalId?: string;
 }
 
 export async function getRecentQueries(agentId: string, limit: number = 10): Promise<RecentQuery[]> {
@@ -368,7 +384,7 @@ export async function getRecentQueries(agentId: string, limit: number = 10): Pro
 
     const { data, error } = await supabase
         .from('query_logs')
-        .select('id, agent_id, response_time_ms, created_at, tx_hash')
+        .select('id, logical_id, agent_id, response_time_ms, created_at, tx_hash, direction, nominal_usd')
         .eq('agent_id', agentId)
         .order('created_at', { ascending: false })
         .limit(limit);
@@ -380,11 +396,91 @@ export async function getRecentQueries(agentId: string, limit: number = 10): Pro
 
     return data.map(q => ({
         id: q.id,
+        logicalId: q.logical_id || undefined,
         agentId: q.agent_id,
         responseTimeMs: q.response_time_ms,
         createdAt: q.created_at,
-        txHash: q.tx_hash || null
+        txHash: q.tx_hash || null,
+        direction: (q.direction as 'credit' | 'debit') ?? 'credit',
+        nominalUsd: q.nominal_usd ?? undefined,
     }));
+}
+
+/** logical_id values already stored for this agent (for merging in-memory telemetry). */
+export async function getPersistedLogicalIdsForAgent(agentId: string): Promise<Set<string>> {
+    if (!supabase) return new Set();
+    try {
+        const { data, error } = await withRetry(async () => {
+            const r = await supabase!
+                .from('query_logs')
+                .select('logical_id')
+                .eq('agent_id', agentId)
+                .not('logical_id', 'is', null);
+            if (r.error) throw r.error;
+            return r;
+        });
+        if (error || !data) return new Set();
+        return new Set(data.map((r: { logical_id: string | null }) => r.logical_id).filter((x): x is string => !!x));
+    } catch {
+        return new Set();
+    }
+}
+
+/**
+ * Returns the net treasury balance for an agent.
+ * Credits (standard queries + A2A received) are added.
+ * Debits (A2A payments sent) are subtracted.
+ * Persisted in Supabase — survives server restarts.
+ */
+export async function getAgentTreasuryBalance(agentId: string): Promise<number> {
+    if (!supabase) return 0;
+
+    let data: { direction?: string | null; nominal_usd?: unknown }[] | null = null;
+    let error: { message?: string; code?: string } | null = null;
+    try {
+        const r = await withRetry(async () => {
+            const q = await supabase!
+                .from('query_logs')
+                .select('direction, nominal_usd')
+                .eq('agent_id', agentId);
+            if (q.error) throw q.error;
+            return q;
+        });
+        data = r.data;
+        error = r.error;
+    } catch (e: any) {
+        error = e;
+    }
+
+    if (error) {
+        // Columns may not exist yet (migration pending) — fall back to count × rate
+        if (error.message?.includes('does not exist')) {
+            const { count } = await supabase
+                .from('query_logs')
+                .select('*', { count: 'exact', head: true })
+                .eq('agent_id', agentId);
+            return (count || 0) * 0.01;
+        }
+        console.warn('[Supabase] getAgentTreasuryBalance failed:', error.message || error);
+        return 0;
+    }
+
+    if (!data) return 0;
+
+    const rowAmt = (row: { nominal_usd?: unknown; direction?: string | null }) => {
+        const raw = row.nominal_usd;
+        const n = raw == null || raw === '' ? NaN : Number.parseFloat(String(raw));
+        if (Number.isFinite(n) && n > 0) return n;
+        const d = (row.direction || 'credit').toLowerCase();
+        // Missing/zero amount: debits are always 0.005 A2A; credits default to standard 0.01
+        return d === 'debit' ? 0.005 : 0.01;
+    };
+
+    return data.reduce((sum, row) => {
+        const amt = rowAmt(row);
+        const d = (row.direction || 'credit').toLowerCase();
+        return d === 'debit' ? sum - amt : sum + amt;
+    }, 0);
 }
 
 // Get stats for a single agent (optimized - no loop)
