@@ -335,7 +335,27 @@ export async function retrieveRagAugmentation(userPrompt: string): Promise<RagAu
             if (!prev || x.score > prev.score) bestPerKey.set(key, x);
         }
 
-        const picked = [...bestPerKey.values()].sort((a, b) => b.score - a.score).slice(0, maxInPrompt);
+        let diverse = [...bestPerKey.values()].sort((a, b) => b.score - a.score);
+
+        // “What is Kairos?”-style questions are about the product; don’t inject arXiv / Gemini
+        // embedding guide chunks just because vectors are loosely similar to “AI”.
+        const productKairosQuestion =
+            /\b(what|who)\s+(is|'s)\s+kairos\b|\bexplain\s+kairos\b|\bkairos\s+buddy\b|\babout\s+kairos\b|\btell\s+me\s+about\s+kairos\b/i.test(
+                trimmed
+            );
+        if (productKairosQuestion) {
+            const peripheral = (x: { c: IndexedChunk }) => {
+                const u = x.c.url || "";
+                return (
+                    u.includes("arxiv.org") ||
+                    (u.includes("ai.google.dev") && u.includes("embeddings"))
+                );
+            };
+            const focused = diverse.filter((x) => !peripheral(x));
+            if (focused.length > 0) diverse = focused;
+        }
+
+        const picked = diverse.slice(0, maxInPrompt);
         const lines: string[] = [
             "### Retrieved knowledge (internal)",
             "Use the excerpts below. Each **[Source N]** is a **different page or file** (same URL is not repeated). Cite with **[Source N]** when you use them. Live market data still requires your tools.",

@@ -62,8 +62,8 @@ stellar contract invoke --network testnet --source kairos --id CBLVIPCOGFNDLBGZ6
 
 Kairos uses the Stellar asset model `USDC:<issuer>`.
 
-- Default testnet path uses treasury-issued USDC for reliability.
-- You can switch to another issuer (for example Circle on supported networks) by setting `USDC_ISSUER_ADDRESS` and ensuring trustlines + token availability for treasury and agent wallets.
+- If **`USDC_ISSUER_ADDRESS` is unset** and **`STELLAR_SPONSOR_SECRET`** is set, the backend uses **treasury-issued demo USDC** — the **same** asset as **Fund Wallet → USDC Faucet** (`/api/stellar/usdc/*`). Micropayments then match what users fund in the app; XLM is only a fallback if that path still cannot pay.
+- Set **`USDC_ISSUER_ADDRESS`** (e.g. Circle testnet issuer) to use a different USDC; ensure treasury and agent accounts have the correct trustlines and balances.
 
 ## API Surface
 
@@ -110,8 +110,11 @@ Required:
 - `GEMINI_API_KEY`
 - `STELLAR_SPONSOR_SECRET`
 - `STELLAR_NETWORK` (`testnet` or `public`)
-- `USDC_ISSUER_ADDRESS`
 - `AGENT_REGISTRY_CONTRACT_ID`
+
+Optional:
+
+- `USDC_ISSUER_ADDRESS` — omit to use **treasury-issued demo USDC** (aligned with in-app faucet); set to Circle (or another) issuer if you want that asset instead.
 
 Recommended:
 

@@ -9,10 +9,15 @@ interface Activity {
   id: string;
   type: string;
   timestamp: string;
-  action: 'received' | 'sent';
+  action?: 'received' | 'sent';
   responseTimeMs: number;
-  amount: number;
+  /** Legacy field from older API */
+  amount?: number;
+  /** Nominal USDC-equivalent credit (dashboard math), not always what the tx used */
+  nominalUsd?: number;
   txHash?: string;
+  /** Parsed from Horizon when txHash is present */
+  onChain?: { code: string; amount: string } | null;
 }
 
 interface ActivityFeedProps {
@@ -75,7 +80,12 @@ export function ActivityFeed({ agentId }: ActivityFeedProps) {
         ) : activities.length === 0 ? (
           <p className="text-muted-foreground text-center py-8 text-sm">No queries yet. Start using this agent to see activity.</p>
         ) : (
-          activities.map((activity) => (
+          activities.map((activity) => {
+            const nominal = activity.nominalUsd ?? activity.amount ?? 0;
+            const creditLine = activity.onChain
+              ? `+${activity.onChain.amount} ${activity.onChain.code}`
+              : `+~$${Number(nominal).toFixed(2)} nominal`;
+            return (
             <div
               key={activity.id}
               className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-4 rounded-xl border border-border/40 bg-secondary/20 hover:bg-secondary/35 transition-colors"
@@ -95,8 +105,15 @@ export function ActivityFeed({ agentId }: ActivityFeedProps) {
                 </div>
               </div>
               <div className="flex flex-col items-stretch sm:items-end gap-2 sm:min-w-[200px]">
-                <div className="font-semibold text-sm text-emerald-400 text-right">
-                  +${activity.amount.toFixed(2)}
+                <div
+                  className="font-semibold text-sm text-emerald-400 text-right"
+                  title={
+                    activity.onChain
+                      ? 'First payment operation in this transaction'
+                      : 'Nominal USDC-equivalent; open tx to see if settlement was USDC or XLM'
+                  }
+                >
+                  {creditLine}
                 </div>
                 {activity.txHash ? (
                   <a
@@ -121,7 +138,8 @@ export function ActivityFeed({ agentId }: ActivityFeedProps) {
                 )}
               </div>
             </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>

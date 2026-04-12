@@ -1,23 +1,56 @@
-// config.ts - Kairos Stellar Multi-Agent Economy
-import { Asset, StrKey } from "@stellar/stellar-sdk";
+// config.ts - Kairos Stellar Multi-Agent Economy (updated: agent addresses v2)
+import { Asset, Keypair, StrKey } from "@stellar/stellar-sdk";
 
-// Circle Testnet USDC on Stellar
+// Circle Testnet USDC on Stellar (used when no treasury / explicit issuer)
 const USDC_CODE = "USDC";
 const DEFAULT_USDC_ISSUER = "GBBD47IF6LWNC76YUOOWDQUV6SBCSYOTZLHXWNIY6S77AZEGTXCOFOYJ";
-const RAW_USDC_ISSUER = (process.env.USDC_ISSUER_ADDRESS || DEFAULT_USDC_ISSUER).trim();
+
+/**
+ * USDC for treasury micropayments + Fund Wallet demo faucet must match.
+ * - If `USDC_ISSUER_ADDRESS` is set to a valid Stellar key → use it (e.g. Circle testnet USDC).
+ * - Otherwise, if `STELLAR_SPONSOR_SECRET` is set → issuer = treasury (same demo USDC as /api/stellar/usdc/*).
+ * - Else → Circle default.
+ */
+function resolveUsdcIssuerAddress(): string {
+    const fromEnv = (process.env.USDC_ISSUER_ADDRESS || "").trim();
+    if (fromEnv && StrKey.isValidEd25519PublicKey(fromEnv)) {
+        return fromEnv;
+    }
+    if (fromEnv) {
+        console.warn(
+            `[config] Invalid USDC_ISSUER_ADDRESS; ignoring. Use treasury-issued demo USDC or fall back to Circle.`
+        );
+    }
+    const secret = (process.env.STELLAR_SPONSOR_SECRET || "").trim();
+    if (secret.startsWith("S")) {
+        try {
+            const treasury = Keypair.fromSecret(secret).publicKey();
+            if (!fromEnv) {
+                console.log(
+                    `[config] USDC issuer = treasury (${treasury.slice(0, 6)}…) — matches Fund Wallet demo USDC. Set USDC_ISSUER_ADDRESS for Circle or another issuer.`
+                );
+            }
+            return treasury;
+        } catch {
+            /* fall through */
+        }
+    }
+    return DEFAULT_USDC_ISSUER;
+}
+
+const RESOLVED_USDC_ISSUER = resolveUsdcIssuerAddress();
 
 // Lazy getter to avoid crashing at module-load time if SDK version has strict validation
 let _usdcAsset: Asset | null = null;
 export function getUsdcAsset(): Asset {
     if (!_usdcAsset) {
-        const issuer = StrKey.isValidEd25519PublicKey(RAW_USDC_ISSUER)
-            ? RAW_USDC_ISSUER
+        const issuer = StrKey.isValidEd25519PublicKey(RESOLVED_USDC_ISSUER)
+            ? RESOLVED_USDC_ISSUER
             : DEFAULT_USDC_ISSUER;
 
-        if (issuer !== RAW_USDC_ISSUER) {
-            // This avoids hard-crashing when a non-Stellar address is provided via env (common during hacks).
+        if (issuer !== RESOLVED_USDC_ISSUER) {
             console.warn(
-                `[config] Invalid USDC_ISSUER_ADDRESS provided; falling back to default issuer ${DEFAULT_USDC_ISSUER}`
+                `[config] Resolved USDC issuer invalid; falling back to default issuer ${DEFAULT_USDC_ISSUER}`
             );
         }
 
@@ -32,9 +65,10 @@ export const config = {
         network: (process.env.STELLAR_NETWORK as "testnet" | "public") || "testnet",
         rpcUrl: "https://soroban-testnet.stellar.org",
         horizonUrl: "https://horizon-testnet.stellar.org",
-        // Circle Testnet USDC on Stellar
         usdcCode: USDC_CODE,
-        usdcIssuer: StrKey.isValidEd25519PublicKey(RAW_USDC_ISSUER) ? RAW_USDC_ISSUER : DEFAULT_USDC_ISSUER,
+        usdcIssuer: StrKey.isValidEd25519PublicKey(RESOLVED_USDC_ISSUER)
+            ? RESOLVED_USDC_ISSUER
+            : DEFAULT_USDC_ISSUER,
         // Master sponsor account (must be funded on testnet)
         sponsorSecret: process.env.STELLAR_SPONSOR_SECRET || "",
     },

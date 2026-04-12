@@ -105,7 +105,7 @@ async function sendAgentPayment(agentId: string, label: string): Promise<string 
                     operation = StellarSdk.Operation.payment({
                         destination,
                         asset: StellarSdk.Asset.native(),
-                        amount: "0.0001000",
+                        amount: "0.0010000",
                     });
                 }
             } catch (e: any) {
@@ -133,7 +133,7 @@ async function sendAgentPayment(agentId: string, label: string): Promise<string 
             transaction.sign(sourceKeypair);
             const result = await submitTransactionWithTimeoutRecovery(transaction);
 
-            const paidAmount = paidCurrency === "USDC" ? Number(price).toFixed(7) : "0.0001000";
+            const paidAmount = paidCurrency === "USDC" ? Number(price).toFixed(7) : "0.0010000";
             console.log(`[x402-Stellar] ✅ Paid Agent ${agentId} (${paidAmount} ${paidCurrency}): ${result.hash}`);
             return result.hash;
         } catch (error: any) {
@@ -305,7 +305,9 @@ You facilitate a multi-agent economy where agents pay each other using x402 USDC
 
 **ROUTING (CRITICAL):**
 - Only the tools you actually call determine which specialist answered. Do not pretend to be "Price Oracle" unless you called getPriceData.
-- For **news, headlines, "latest news", breaking events**: call **getNews** (or **searchWeb** if getNews is unavailable). Never use getPriceData for news questions.
+- For **"why is X dumping/pumping?", market analysis, current events, macroeconomic crypto news, regulatory news**: use your built-in **Google Search** grounding (it activates automatically when you need live web data).
+- For **Stellar on-chain activity, "latest Stellar network events"**: call **getNews**.
+- For **general crypto news headlines or current events**: rely on Google Search grounding — it gives real web results.
 - For **prices, ATH, market cap, "how much is X"**: call **getPriceData**.
 - For **Stellar SDEX / network stats**: call **getStellarStats** or **getStellarAccount** as appropriate.
 - For **simple greetings** ("hi", "hey", "hello", "good morning", thanks, small talk): reply in 1–3 friendly sentences **with NO tools**. Do not attribute the reply to a named specialist agent.
@@ -316,10 +318,11 @@ You facilitate a multi-agent economy where agents pay each other using x402 USDC
 - When users mention "XLM" or "Stellar", use your Stellar-specific tools.
 
 **On-chain x402 payments (do not invent numbers):**
-- Treasury-to-agent payments are typically **~0.01 USDC** per specialist invocation when the USDC path works (registry price).
-- If USDC cannot be used, the implementation may pay **0.0001 XLM** instead—block explorers show **XLM**, not USDC, for those txs.
-- UI copy may say **~$0.03 per chat** as a **bundled UX estimate**; that is **not** the literal amount of every single Stellar operation.
-- Never state random amounts like **"0.1 USDC"** unless quoting an explicit config value the user provided.
+- Treasury-to-agent payments are **0.01 USDC** per specialist invocation. Agent accounts are pre-configured with USDC trustlines so USDC payments should now succeed.
+- If USDC still fails, the fallback is **0.001 XLM** — block explorers show **XLM**, not USDC, for those txs.
+- UI copy says **~$0.03 per chat** as a **bundled UX estimate**, not the literal per-operation amount.
+- **Never** state "0.1 USDC" or any invented amount.
+- On Stellar Expert, **Max Fee** (0.00001 XLM) is the **network fee to validators**, NOT the payment to the agent. The agent receives the payment operation amount (0.01 USDC or 0.001 XLM) which is a separate field in the transaction.
 
 **Your Capabilities:**
 - PRICE ORACLE: Real-time prices for any crypto (XLM, USDC, BTC, ETH, etc.) via CoinGecko.
@@ -339,8 +342,9 @@ You facilitate a multi-agent economy where agents pay each other using x402 USDC
 - Stellar addresses start with 'G'.
 
 **Handling Tool Failures (STRICT):**
-- If a tool returns an error or times out: say **one short sentence** only (e.g. "Live feed unavailable; try again in a moment.") — then answer from general knowledge if safe, or suggest retry.
-- **NEVER** invent stories about "heavy load in the marketplace", "agents timing out in the agentic economy", "network congestion in the marketplace", or similar dramatic apologies. Those are misleading.
+- If a tool returns an error JSON with an "error" key: note it briefly (one sentence max) then answer from general knowledge if safe.
+- If a tool returns valid data, USE IT — do NOT say it's unavailable.
+- **NEVER** invent stories about "heavy load in the marketplace", "agents timing out in the agentic economy", or similar dramatic apologies. Those are misleading.
 - **NEVER** apologize at length before answering. No multi-paragraph apologies.
 - Do not make up specific prices, headlines, or metrics as if they were live.
 
@@ -368,7 +372,7 @@ const getPriceDataFunction = {
 // Function declaration for web search
 const searchWebFunction = {
     name: "searchWeb",
-    description: "Search the web for real-time information. Use this for news, current events, company information, general knowledge questions, or anything that requires up-to-date web information.",
+    description: "Search the web for real-time information. Use this for: crypto market analysis ('why is X dumping/pumping?'), current events, macroeconomic factors affecting crypto, company news, regulatory news, general 'why' questions about market moves, or anything that requires live web results. PREFER this over getNews for market explanation questions.",
     parameters: {
         type: SchemaType.OBJECT,
         properties: {
@@ -422,7 +426,7 @@ const getHacksFunction = {
 // Function declaration for crypto news
 const getNewsFunction = {
     name: "getNews",
-    description: "Get latest crypto news headlines from trusted sources. REQUIRED when the user asks for news, headlines, latest news, todays news, or what happened in crypto. Do NOT use getPriceData for news.",
+    description: "Get live Stellar network activity and on-chain events (recent operations from Horizon ledger). Best for: 'show me Stellar network activity', 'what's happening on-chain', 'latest Stellar transactions'. For general crypto news or market explanations ('why is X dumping'), use searchWeb instead.",
     parameters: {
         type: SchemaType.OBJECT,
         properties: {
@@ -623,14 +627,14 @@ async function handleSearchWeb(query: string): Promise<{ data: string; txHash?: 
 
     if (!searchResult) {
         return { data: JSON.stringify({
-            system_note: "Web search failed (Rate Limit or Error). Please answer the user's question using your internal knowledge, but mention that you couldn't verify with live search."
+            system_note: "Web search is unavailable. Answer from your training knowledge and be clear it is not live data."
         }) };
     }
 
     return {
         data: JSON.stringify({
             query: searchResult.query,
-            answer: searchResult.answer, // Groq's synthesized summary
+            answer: searchResult.answer,
             sources: searchResult.results.map(r => ({
                 title: r.title,
                 url: r.url,
@@ -698,7 +702,7 @@ async function handleGetNews(
     }
 
     if (!news || news.articles.length === 0) {
-        return { data: JSON.stringify({ error: "Could not fetch news data. Try again later." }) };
+        return { data: JSON.stringify({ error: "Could not fetch Stellar network activity. Try again later." }) };
     }
 
     newsScoutQueryCount++;
@@ -708,6 +712,7 @@ async function handleGetNews(
 
     return {
         data: JSON.stringify({
+            note: "These are live Stellar network operations fetched from Horizon ledger, NOT traditional crypto news. Present them as on-chain activity, not headlines.",
             articles: news.articles.slice(0, 8).map(a => ({
                 title: a.title,
                 description: a.description,

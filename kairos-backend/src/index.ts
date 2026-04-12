@@ -197,6 +197,28 @@ async function enrichActivityTxHashesFromHorizon(
     }
 }
 
+/** First payment op in a tx — used so the dashboard shows XLM vs USDC truthfully. */
+async function horizonPaymentFromTx(txHash: string): Promise<{ code: string; amount: string } | null> {
+    const base = config.stellar.horizonUrl.replace(/\/$/, "");
+    try {
+        const { data } = await axios.get(`${base}/transactions/${encodeURIComponent(txHash)}/operations`, {
+            params: { limit: 30 },
+            timeout: 10_000,
+        });
+        const records = data?._embedded?.records || [];
+        for (const r of records) {
+            if (r.type !== "payment") continue;
+            if (r.asset_type === "native") {
+                return { code: "XLM", amount: String(r.amount) };
+            }
+            return { code: String(r.asset_code || "ASSET"), amount: String(r.amount) };
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
 // --- Configuration ---
 const PORT = process.env.PORT || 3001;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -620,16 +642,24 @@ app.get("/dashboard/activity", async (req, res) => {
     const queryAgentId = (agentId as string) || 'oracle';
     const queryLimit = parseInt(limit as string) || 10;
 
-    const toPayload = (enriched: ActivityRow[]) =>
-        enriched.map((q) => ({
+    const buildActivities = async (enriched: ActivityRow[]) => {
+        const rows = enriched.map((q) => ({
             id: q.id,
-            type: 'query' as const,
+            type: "query" as const,
             agentId: q.agentId,
             responseTimeMs: q.responseTimeMs,
             timestamp: q.createdAt,
             txHash: q.txHash,
-            amount: AGENT_PRICING[q.agentId] ?? 0.01,
+            nominalUsd: AGENT_PRICING[q.agentId] ?? 0.01,
+            onChain: null as { code: string; amount: string } | null,
         }));
+        for (const row of rows) {
+            if (row.txHash) {
+                row.onChain = await horizonPaymentFromTx(row.txHash);
+            }
+        }
+        return rows;
+    };
 
     try {
         const queries = await getRecentQueries(queryAgentId, queryLimit);
@@ -659,7 +689,7 @@ app.get("/dashboard/activity", async (req, res) => {
 
         res.json({
             success: true,
-            activities: toPayload(enriched),
+            activities: await buildActivities(enriched),
         });
     } catch (error) {
         const enriched: ActivityRow[] = localQueryLogs
@@ -673,7 +703,7 @@ app.get("/dashboard/activity", async (req, res) => {
                 txHash: q.txHash || null,
             }));
         await enrichActivityTxHashesFromHorizon(enriched, queryAgentId);
-        res.json({ success: true, activities: toPayload(enriched) });
+        res.json({ success: true, activities: await buildActivities(enriched) });
     }
 });
 
