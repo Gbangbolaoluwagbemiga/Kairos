@@ -221,6 +221,33 @@ export async function getTurtleYields(): Promise<YieldOpportunity[]> {
     }));
 }
 
+// Simple in-memory cache for yield data (2 minute TTL)
+let yieldCache: { data: YieldOpportunity[]; timestamp: number } | null = null;
+const YIELD_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+
+async function fetchAllYields(): Promise<YieldOpportunity[]> {
+    // Return cached data if fresh
+    if (yieldCache && Date.now() - yieldCache.timestamp < YIELD_CACHE_TTL_MS) {
+        console.log("[Yield] Using cached data");
+        return yieldCache.data;
+    }
+
+    console.log("[Yield] Fetching fresh data from all protocols...");
+    const [staking, lending, vaults, lp, fixed, turtle] = await Promise.all([
+        getStakingYields().catch(() => []),
+        getLendingYields().catch(() => []),
+        getVaultYields(20).catch(() => []),
+        getLPYields().catch(() => []),
+        getFixedYields().catch(() => []),
+        getTurtleYields().catch(() => [])
+    ]);
+
+    const allYields = [...staking, ...lending, ...vaults, ...lp, ...fixed, ...turtle];
+    yieldCache = { data: allYields, timestamp: Date.now() };
+    console.log(`[Yield] Cached ${allYields.length} opportunities`);
+    return allYields;
+}
+
 /**
  * Get top yields across all protocols
  */
@@ -234,18 +261,8 @@ export async function getTopYields(options?: {
 }): Promise<YieldSummary> {
     const limit = options?.limit || 20;
 
-    // Fetch from all sources in parallel
-    const [staking, lending, vaults, lp, fixed, turtle] = await Promise.all([
-        getStakingYields(),
-        getLendingYields(),
-        getVaultYields(20),
-        getLPYields(),
-        getFixedYields(),
-        getTurtleYields()
-    ]);
-
-    // Combine all yields
-    let allYields = [...staking, ...lending, ...vaults, ...lp, ...fixed, ...turtle];
+    // Use cached fetch
+    let allYields = await fetchAllYields();
 
     // Filter out dust (minimum 1% APY unless explicitly requested lower)
     if (!options?.minApy || options.minApy < 1) {

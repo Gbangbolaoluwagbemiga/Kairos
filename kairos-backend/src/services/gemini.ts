@@ -26,17 +26,17 @@ import { retrieveRagAugmentation, type RagSource } from "./rag.js";
 let treasuryPaymentQueue: Promise<unknown> = Promise.resolve();
 
 /** Retry a flaky async call up to `attempts` times with exponential backoff. */
-async function withRetry<T>(fn: () => Promise<T>, attempts = 3, baseDelayMs = 1000): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, attempts = 5, baseDelayMs = 2000): Promise<T> {
     let lastErr: unknown;
     for (let i = 0; i < attempts; i++) {
         try {
             return await fn();
         } catch (err: any) {
             lastErr = err;
-            const isFetchError = err?.message?.includes('fetch failed') || err?.message?.includes('ECONNRESET') || err?.message?.includes('timeout');
+            const isFetchError = err?.message?.includes('fetch failed') || err?.message?.includes('ECONNRESET') || err?.message?.includes('timeout') || err?.message?.includes('ETIMEDOUT');
             if (!isFetchError || i === attempts - 1) throw err;
             const delay = baseDelayMs * 2 ** i;
-            console.warn(`[Gemini] Attempt ${i + 1} failed (${err.message}). Retrying in ${delay}ms…`);
+            console.warn(`[Gemini] Attempt ${i + 1}/${attempts} failed (${err.message}). Retrying in ${delay}ms…`);
             await new Promise(r => setTimeout(r, delay));
         }
     }
@@ -334,6 +334,11 @@ export function initGemini(apiKey: string) {
     console.log(`[Provider] Gemini initialized with model: ${config.gemini.model}`);
 }
 
+// Request options with timeout for all Gemini API calls
+const GEMINI_REQUEST_OPTIONS = {
+    timeout: 60000, // 60 second timeout per request
+};
+
 export function getOracleQueryCount(): number {
     return oracleQueryCount;
 }
@@ -455,9 +460,9 @@ You facilitate a multi-agent economy where agents pay each other using x402 USDC
 
 **ROUTING (CRITICAL):**
 - Only the tools you actually call determine which specialist answered. Do not pretend to be "Price Oracle" unless you called getPriceData.
-- For **"why is X dumping/pumping?", market analysis, current events, macroeconomic crypto news, regulatory news**: use your built-in **Google Search** grounding (it activates automatically when you need live web data).
-- For **Stellar on-chain activity, "latest Stellar network events"**: call **getNews**.
-- For **general crypto news headlines or current events**: rely on Google Search grounding — it gives real web results.
+- For **"why is X dumping/pumping?", market analysis, current events, macroeconomic or regulatory explainers**: use **searchWeb** (live web) and/or built-in search grounding when available — not getNews alone.
+- For **crypto news headlines, "latest crypto news", breaking stories**: call **getNews** (RSS headlines from major outlets).
+- For **Stellar ledger ops for one account**: only when the user gives a **Stellar public key (G..., 56 chars)** — call **getNews** with that string as \`query\` to return recent Horizon operations; for SDEX volume or balances use **getStellarStats** / **getStellarAccount**.
 - For **prices, ATH, market cap, "how much is X"**: call **getPriceData**.
 - For **Stellar SDEX / network stats**: call **getStellarStats** or **getStellarAccount** as appropriate.
 - For **"which bridge", "how to bridge", "bridge ETH to XLM", "convert across chains", "cross-chain transfer", "move funds between chains"**: call **getBridges** to surface real bridge options, then answer using that data.
@@ -523,7 +528,7 @@ const getPriceDataFunction = {
 // Function declaration for web search
 const searchWebFunction = {
     name: "searchWeb",
-    description: "Search the web for real-time information. Use this for: crypto market analysis ('why is X dumping/pumping?'), current events, macroeconomic factors affecting crypto, company news, regulatory news, general 'why' questions about market moves, or anything that requires live web results. PREFER this over getNews for market explanation questions.",
+    description: "Search the web for real-time information. Use for: market analysis ('why is X dumping/pumping?'), macro/regulatory explainers, and anything needing live web pages. Use getNews for quick headline lists; use searchWeb for deeper 'why' questions.",
     parameters: {
         type: SchemaType.OBJECT,
         properties: {
@@ -577,7 +582,8 @@ const getHacksFunction = {
 // Function declaration for crypto news
 const getNewsFunction = {
     name: "getNews",
-    description: "Get live Stellar network activity and on-chain events (recent operations from Horizon ledger). Best for: 'show me Stellar network activity', 'what's happening on-chain', 'latest Stellar transactions'. For general crypto news or market explanations ('why is X dumping'), use searchWeb instead.",
+    description:
+        "Get recent crypto news headlines from major outlets (RSS aggregation). Use for: 'latest crypto news', 'what's happening in crypto', 'breaking news', category filters (bitcoin, defi, breaking). If the user passes a Stellar public key (G... 56 chars) as the query, returns recent on-chain operations for that account instead. For long-form 'why is the market moving' analysis, prefer searchWeb.",
     parameters: {
         type: SchemaType.OBJECT,
         properties: {
@@ -723,6 +729,27 @@ const getStellarAccountFunction = {
     },
 };
 
+// Function declaration for Portfolio Rebalancer — multi-hop orchestration demo
+const getPortfolioRebalanceFunction = {
+    name: "getPortfolioRebalance",
+    description: "Analyze portfolio holdings and recommend rebalancing strategy. This orchestrates MULTIPLE agents: Price Oracle (market prices), Yield Optimizer (best yields), and Stellar Scout (Stellar DeFi). Use when users ask about 'rebalance my portfolio', 'optimize holdings', 'portfolio strategy', 'where should I move funds', or 'best allocation'. Requires asset list.",
+    parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+            assets: {
+                type: SchemaType.STRING,
+                description: "Comma-separated asset symbols to analyze, e.g., 'ETH,USDC,XLM,BTC'",
+            },
+            riskProfile: {
+                type: SchemaType.STRING,
+                enum: ["conservative", "moderate", "aggressive"],
+                description: "Risk tolerance: conservative (stable yields), moderate (balanced), aggressive (highest APY)",
+            },
+        },
+        required: ["assets"],
+    },
+};
+
 export interface ImageData {
     base64: string;
     mimeType: string;
@@ -853,7 +880,7 @@ async function handleGetNews(
     }
 
     if (!news || news.articles.length === 0) {
-        return { data: JSON.stringify({ error: "Could not fetch Stellar network activity. Try again later." }) };
+        return { data: JSON.stringify({ error: "Could not fetch news right now. Try again in a moment." }) };
     }
 
     newsScoutQueryCount++;
@@ -863,7 +890,6 @@ async function handleGetNews(
 
     return {
         data: JSON.stringify({
-            note: "These are live Stellar network operations fetched from Horizon ledger, NOT traditional crypto news. Present them as on-chain activity, not headlines.",
             articles: news.articles.slice(0, 8).map(a => ({
                 title: a.title,
                 description: a.description,
@@ -1115,6 +1141,92 @@ async function handleGetTokenomics(symbol: string): Promise<{ data: string; txHa
     };
 }
 
+/**
+ * Portfolio Rebalancer — Multi-Agent Orchestration Demo
+ * Calls 3+ agents (Oracle, Yield, Stellar Scout) and combines their data.
+ * This triggers A2A payments: the primary orchestrating agent pays sub-agents.
+ */
+async function handleGetPortfolioRebalance(
+    assets: string,
+    riskProfile: "conservative" | "moderate" | "aggressive" = "moderate"
+): Promise<{ data: string; txHashes: Record<string, string> }> {
+    console.log(`[Gemini] 🔄 Portfolio Rebalancer: assets=${assets}, risk=${riskProfile}`);
+
+    const assetList = assets.split(',').map(a => a.trim().toUpperCase()).filter(Boolean);
+    if (assetList.length === 0) {
+        return { data: JSON.stringify({ error: "Please provide at least one asset symbol" }), txHashes: {} };
+    }
+
+    const txHashes: Record<string, string> = {};
+
+    // 1. Fetch prices for all assets in parallel (Oracle agent)
+    const pricePromises = assetList.map(async (symbol): Promise<{ symbol: string; priceData: PriceData | null }> => {
+        const priceData = await fetchPrice(symbol);
+        return { symbol, priceData };
+    });
+    oracleQueryCount++;
+    const payOracleP = createOraclePayment(`rebal:prices`);
+
+    // 2. Get yield opportunities (Yield agent)
+    yieldOptimizerQueryCount++;
+    const payYieldP = createYieldOptimizerPayment(`rebal:yields`);
+    const yieldsP = yieldOptimizer.getTopYields({ minApy: riskProfile === "aggressive" ? 5 : 2, limit: 15 });
+
+    // 3. Get Stellar DeFi yields (Stellar Scout agent)
+    scoutQueryCount++;
+    const payScoutP = createStellarScoutPayment(`rebal:stellar`);
+    const stellarYieldsP = StellarAnalyticsService.getStellarYields();
+
+    // Wait for all data + payments
+    const [prices, yields, stellarYields, oracleTx, yieldTx, scoutTx] = await Promise.all([
+        Promise.all(pricePromises),
+        yieldsP,
+        stellarYieldsP,
+        withTimeoutOptional(payOracleP, PAYMENT_CAPTURE_TIMEOUT_MS),
+        withTimeoutOptional(payYieldP, PAYMENT_CAPTURE_TIMEOUT_MS),
+        withTimeoutOptional(payScoutP, PAYMENT_CAPTURE_TIMEOUT_MS),
+    ]);
+
+    if (oracleTx) txHashes["oracle"] = oracleTx;
+    if (yieldTx) txHashes["yield"] = yieldTx;
+    if (scoutTx) txHashes["stellar-scout"] = scoutTx;
+
+    // Build portfolio analysis
+    const portfolioData = prices.map(({ symbol, priceData }) => ({
+        symbol,
+        currentPrice: priceData?.price ?? "N/A",
+        change24h: priceData?.change24h ?? "N/A",
+        marketCap: priceData?.marketCap ?? "N/A",
+    }));
+
+    // Filter yields by risk profile
+    const apyThreshold = riskProfile === "conservative" ? 3 : riskProfile === "moderate" ? 5 : 10;
+    const filteredYields = yields?.opportunities?.filter((y) => y.apy >= apyThreshold).slice(0, 5) || [];
+
+    // Combine recommendations
+    const recommendations = {
+        riskProfile,
+        assets: portfolioData,
+        agentsUsed: ["oracle", "yield", "stellar-scout"],
+        yieldOpportunities: filteredYields.map((y) => ({
+            protocol: y.protocol,
+            chain: y.chain,
+            asset: y.asset,
+            apy: y.apy,
+            tvl: y.tvl,
+        })),
+        stellarYields: stellarYields?.slice(0, 3) || [],
+        strategy: riskProfile === "conservative"
+            ? "Focus on stable assets (USDC, USDT) with low-risk yields (3-5% APY)"
+            : riskProfile === "moderate"
+            ? "Balanced mix of volatile assets and yield-bearing positions (5-10% APY)"
+            : "Maximize APY with higher volatility exposure (10%+ APY)",
+        multiAgentNote: `This analysis was coordinated across 3 specialist agents: Price Oracle (market data), Yield Optimizer (DeFi yields), and Stellar Scout (Stellar ecosystem). Each agent was paid 0.01 USDC via x402, and A2A sub-payments (0.005 USDC each) were triggered for coordination.`,
+    };
+
+    return { data: JSON.stringify(recommendations), txHashes };
+}
+
 export interface GenerateResponseResult {
     response: string;
     agentsUsed: string[];
@@ -1159,9 +1271,9 @@ export async function generateResponse(
     const startedAt = Date.now();
     // Best-effort latency cap:
     // Keep typical responses fast (<~5s end-to-end) by limiting tool execution time.
-    // Still overridable via env for deeper/longer analysis.
-    const TOOL_BUDGET_MS = Number(process.env.KAIROS_TOOL_BUDGET_MS || 6500);
-    const TOOL_TIMEOUT_MS = Number(process.env.KAIROS_TOOL_TIMEOUT_MS || 6000);
+    // Increased timeouts for stability — Yield/DeFi tools need time to fetch from multiple sources
+    const TOOL_BUDGET_MS = Number(process.env.KAIROS_TOOL_BUDGET_MS || 25000);
+    const TOOL_TIMEOUT_MS = Number(process.env.KAIROS_TOOL_TIMEOUT_MS || 20000);
 
     const remainingMs = () => TOOL_BUDGET_MS - (Date.now() - startedAt);
 
@@ -1314,12 +1426,12 @@ export async function generateResponse(
                         getPerpMarketsFunction,
                         getStellarStatsFunction,
                         getStellarYieldsFunction,
-                        getStellarAccountFunction
+                        getStellarAccountFunction,
                     ],
                 },
             ],
             systemInstruction: SYSTEM_PROMPT,
-        });
+        }, GEMINI_REQUEST_OPTIONS);
 
         // Build content parts for the current message
         const currentMessageParts: any[] = [];

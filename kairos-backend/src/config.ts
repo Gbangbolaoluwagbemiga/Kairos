@@ -80,10 +80,10 @@ export const config = {
         escrowTimeout: 300, // 5 minutes
     },
 
-    // Gemini AI model
+    // Gemini AI model — use stable model for hackathon reliability
     gemini: {
-        // model: "gemini-2.5-flash",
-        model: "gemini-3-flash-preview",
+        model: "gemini-2.5-flash",
+        // model: "gemini-3-flash-preview", // experimental, often times out
     },
 
     // Agent specific pricing

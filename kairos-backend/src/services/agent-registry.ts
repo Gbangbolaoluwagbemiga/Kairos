@@ -41,6 +41,7 @@ export class AgentRegistryService {
         tokenomics: "tokenomics",
         perp: "perp",
         stellar: "stellar",
+        "stellar-scout": "stellar", // alias for stellar-scout agent
         protocol: "protocol",
         bridges: "bridges",
         "stellar-dex": "stellar-dex",

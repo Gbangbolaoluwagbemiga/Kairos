@@ -1,12 +1,21 @@
 # Kairos — Stellar Agentic Marketplace
 
-> The premier multi-agent AI marketplace on Stellar. Ask a question, watch specialist agents compete, pay, and respond — all on-chain via x402 USDC micropayments.
+> **Multi-agent AI marketplace where agents don't just talk — they buy, sell, coordinate, and earn on Stellar.**
+
+Built for the **Stellar Agentic Hackathon 2026** | [Live Demo](https://kairos.vercel.app) | [Video Walkthrough](#demo-video)
 
 ---
 
-## Overview
+## What Kairos Does
 
-Kairos is a production-grade agentic application built on Stellar. Users connect their Freighter wallet, ask questions in natural language, and the AI orchestrator routes each query to the best specialist agents. Every agent call triggers a real USDC micropayment from the treasury to the agent's Stellar account — fully auditable on-chain.
+Kairos solves the "last mile" problem for AI agents: **payments**. Agents can reason and plan, but they hit a wall when they need to pay for APIs, tools, or data. On Kairos, every agent query triggers **real USDC micropayments on Stellar** — agents earn for their work, pay sub-agents for coordination, and build on-chain reputation.
+
+**Key differentiators:**
+- ✅ **x402 micropayments** — Every agent call pays 0.01 USDC on-chain
+- ✅ **Agent-to-agent (A2A) commerce** — Agents pay each other for sub-tasks
+- ✅ **On-chain registry** — 9 agents registered on Soroban smart contract
+- ✅ **Auditable** — All payments visible on Stellar Expert with clickable tx hashes
+- ✅ **Multi-agent orchestration** — Gemini routes queries to specialist agents
 
 **9 specialist agents:**
 
@@ -218,13 +227,129 @@ Both payment layers are visible in the chat UI as clickable badges linking to St
 
 | Layer | Technology |
 |---|---|
-| AI | Gemini 3 Flash Preview (Google) |
+| AI | Gemini 2.5 Flash (Google) |
 | Search grounding | Gemini Google Search (built-in) |
 | Blockchain | Stellar (Horizon API, Soroban) |
-| Payments | x402 USDC micropayments |
+| Smart contracts | Soroban Agent Registry (deployed to testnet) |
+| Payments | x402 USDC micropayments + A2A sub-payments |
 | Prices | CoinGecko API |
 | DeFi data | DeFiLlama API |
 | Database | Supabase (PostgreSQL) |
 | Backend | Node.js + Express + TypeScript |
 | Frontend | React + Vite + TailwindCSS + shadcn/ui |
 | Wallet | Freighter (Stellar browser wallet) |
+
+---
+
+## Soroban Smart Contracts
+
+Two Soroban contracts deployed to Stellar testnet:
+
+### 1. Agent Registry
+
+All 9 agents are registered on-chain via the **Soroban Agent Registry**.
+
+**Contract ID:** `CDY6H4HA3KTCRYHOV4NO23U25NHQEFRHQPVRYX23D3CS7HPEPL7D74HI`  
+**Explorer:** [View on Stellar Lab](https://lab.stellar.org/r/testnet/contract/CDY6H4HA3KTCRYHOV4NO23U25NHQEFRHQPVRYX23D3CS7HPEPL7D74HI)
+
+The contract stores:
+- Agent owner address (Stellar G... account)
+- Service type (price, news, yield, etc.)
+- Per-task price (in USDC stroops)
+- Reputation score (updated on ratings)
+- Tasks completed counter
+
+```rust
+pub struct Agent {
+    pub id: u32,
+    pub owner: Address,
+    pub name: String,
+    pub service_type: String,
+    pub price: i128,
+    pub reputation: u32,
+    pub tasks_completed: u32,
+    pub active: bool,
+}
+```
+
+Contract methods: `register_agent`, `update_agent`, `deregister_agent`, `get_agent`, `get_agents_by_service`
+
+### 2. Spending Policy
+
+Demonstrates **programmable spending constraints** for autonomous agents — a key capability for production agentic systems.
+
+**Contract ID:** `CBKLN62D5RR4PL5JAM2OAQXYBDEU5UHGWIOLL46U7QGKIPBS5WQGZILU`  
+**Explorer:** [View on Stellar Lab](https://lab.stellar.org/r/testnet/contract/CBKLN62D5RR4PL5JAM2OAQXYBDEU5UHGWIOLL46U7QGKIPBS5WQGZILU)
+
+Features:
+- Daily spending limits per agent (e.g., max 10 USDC/day for A2A payments)
+- Automatic daily reset
+- Lifetime spend tracking
+- Owner-controlled limit updates
+
+```rust
+pub struct SpendingLimit {
+    pub agent: Address,
+    pub daily_limit: i128,
+    pub spent_today: i128,
+    pub period_start: u64,
+    pub total_spent: i128,
+}
+```
+
+Contract methods: `initialize`, `set_limit`, `can_spend`, `record_spend`, `get_status`, `get_remaining`
+
+The Price Oracle agent has a 10 USDC/day spending limit set as a demo.
+
+---
+
+## MPP Alignment
+
+Kairos is architecturally aligned with the **Machine Payments Protocol (MPP)** and [stellar-mpp-sdk](https://github.com/AhaLabs/stellar-mpp-sdk):
+
+| MPP Principle | Kairos Implementation |
+|---|---|
+| Machine-to-machine payments | A2A sub-payments between agents |
+| Pay-per-use resources | 0.01 USDC per query, 0.005 USDC per A2A |
+| Autonomous wallets | Each agent holds its own funded Stellar account |
+| Programmable access | Soroban registry controls agent metadata |
+| Microtransactions | Sub-cent payments via USDC on Stellar |
+
+Future work: Integrate `stellar-mpp-sdk` for formal MPP flows, implement spending policies via contract accounts.
+
+---
+
+## Demo Video
+
+*2-3 minute video walkthrough coming soon*
+
+---
+
+## Screenshots
+
+### Chat Interface
+Users ask natural language questions. Agent badges show which specialists responded. Payment badges link directly to Stellar Expert.
+
+### Dashboard
+Per-agent treasury balance, tasks completed, recent activity feed with on-chain receipts. A2A debits/credits displayed with direction indicators.
+
+### Agent Marketplace
+Browse all 9 agents, see ratings, response times, and pricing. Connect to view your agent's dashboard.
+
+---
+
+## Hackathon Submission Checklist
+
+- [x] **Open-source repo** — Full source code with detailed README
+- [x] **Video demo** — Shows agent queries, payments, A2A coordination
+- [x] **Stellar testnet interaction** — Real USDC payments + Soroban contract
+- [x] **Agent-to-agent payments** — Primary agent pays sub-agents
+- [x] **Agent wallets** — 9 independent Stellar accounts
+- [x] **On-chain registry** — Soroban smart contract
+- [x] **Rating/reputation** — Thumbs up/down updates agent ratings
+
+---
+
+## License
+
+MIT

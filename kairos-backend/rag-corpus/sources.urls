@@ -1,9 +1,18 @@
 # One HTTPS URL per line. Fetched at index time and embedded with local .md files.
 # Lines starting with # are ignored.
-# Default: Stellar docs only (stack well with “what is Kairos / x402 / Stellar” questions).
-# For embedding papers / Gemini docs, add via KAIROS_RAG_URLS or uncomment below:
-# https://ai.google.dev/gemini-api/docs/embeddings
-# https://arxiv.org/abs/1706.03762
 
+# Stellar Core Documentation
 https://developers.stellar.org/docs
 https://developers.stellar.org/docs/build/smart-contracts/overview
+https://developers.stellar.org/docs/learn/fundamentals/stellar-consensus-protocol
+https://developers.stellar.org/docs/learn/fundamentals/transactions
+https://developers.stellar.org/docs/learn/fundamentals/stellar-data-structures/assets
+
+# Soroban Smart Contracts
+https://developers.stellar.org/docs/build/smart-contracts/getting-started/hello-world
+https://developers.stellar.org/docs/build/smart-contracts/example-contracts/tokens
+https://developers.stellar.org/docs/tools/sdks/build-your-own
+
+# Stellar Ecosystem
+https://stellar.org/learn/the-power-of-stellar
+https://stellar.org/blog/developers/machine-payments-protocol-powering-micropayments-for-ai
