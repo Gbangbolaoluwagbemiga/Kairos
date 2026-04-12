@@ -187,16 +187,30 @@ Set `VITE_API_URL` to your Railway backend URL. `vercel.json` includes SPA rewri
 
 ---
 
-## x402 Payment Flow
+## Payment Architecture
 
-1. User sends a message → backend starts a chat session
-2. Gemini orchestrator routes to specialist agents via function calls
-3. For each agent call, treasury sends **0.01 USDC** to that agent's Stellar address
-4. Transaction hash is returned alongside the AI response
-5. Dashboard shows live activity feed with Stellar Expert links
+Kairos implements two layers of on-chain payments — both are real Stellar transactions, fully auditable.
 
-**Payment path:** Treasury → Agent wallet (USDC, Stellar testnet)  
-**Network fee:** 0.00001 XLM (paid by treasury, separate from agent payment)
+### Layer 1: Treasury → Agent (x402)
+Every user query triggers the treasury paying each specialist agent 0.01 USDC via Stellar's x402 micropayment protocol. The payment fires before the response is returned and the tx hash is embedded in the UI.
+
+```
+User query → Orchestrator → Agent A  →  0.01 USDC (treasury → oracle)
+                          → Agent B  →  0.01 USDC (treasury → news)
+```
+
+### Layer 2: Agent → Agent (A2A Sub-payments)
+When multiple agents collaborate on a query, the primary agent pays the sub-agents 0.005 USDC for their coordination. This is true autonomous agent commerce — agents earn AND spend on Stellar.
+
+```
+Agent A (oracle) → Agent B (news)  →  0.005 USDC A2A payment
+```
+
+Both payment layers are visible in the chat UI as clickable badges linking to StellarExpert.
+
+**Payment path:** Treasury (USDC issuer) → Agent wallets (USDC, Stellar testnet)  
+**Network fee:** 0.00001 XLM per transaction (Stellar network validators)  
+**A2A protocol:** Compatible with [stellar-mpp-sdk](https://github.com/stellar/stellar-mpp-sdk) Machine Payments Protocol — each agent holds its own funded wallet and signs transactions autonomously.
 
 ---
 

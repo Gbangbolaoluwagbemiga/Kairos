@@ -12,6 +12,14 @@ export interface RagSourceRef {
     url?: string;
 }
 
+export interface A2APayment {
+    from: string;
+    to: string;
+    amount: string;
+    txHash: string;
+    label: string;
+}
+
 export interface Message {
     id: string;
     content: string;
@@ -20,6 +28,7 @@ export interface Message {
     escrowId?: string;
     txHash?: string;
     txHashes?: Record<string, string>;
+    a2aPayments?: A2APayment[];
     imagePreview?: string;
     agentsUsed?: string[];
     partial?: boolean;

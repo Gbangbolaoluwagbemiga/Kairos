@@ -1,13 +1,11 @@
 /**
- * Generate fresh agent keypairs, fund them from the treasury,
- * add USDC trustlines (treasury-issued), and seed 0.1 USDC each.
+ * Generate fresh agent keypairs for all 9 Kairos agents.
+ * Creates Stellar accounts with USDC trustlines (treasury-sponsored),
+ * seeds each with 1 USDC, and writes secrets to agent-wallets.json.
  *
  * Run:
  *   cd kairos-backend
  *   npx tsx scripts/generate-agent-wallets.ts
- *
- * Outputs new AGENT_*_ADDRESS and AGENT_*_SECRET values to add to .env.
- * The script also writes agent-wallets.json with the full keypairs (keep secret!).
  */
 
 import * as StellarSdk from "@stellar/stellar-sdk";
@@ -17,7 +15,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
 const HORIZON_URL = "https://horizon-testnet.stellar.org";
 const NETWORK_PASSPHRASE = StellarSdk.Networks.TESTNET;
@@ -26,87 +24,61 @@ const server = new StellarSdk.Horizon.Server(HORIZON_URL);
 const SPONSOR_SECRET = process.env.STELLAR_SPONSOR_SECRET!;
 const USDC_ISSUER_ADDRESS = process.env.USDC_ISSUER_ADDRESS!;
 
-if (!SPONSOR_SECRET) {
-    console.error("❌ STELLAR_SPONSOR_SECRET must be set in .env");
-    process.exit(1);
-}
-if (!USDC_ISSUER_ADDRESS) {
-    console.error("❌ USDC_ISSUER_ADDRESS must be set in .env");
-    process.exit(1);
-}
+if (!SPONSOR_SECRET) { console.error("❌ STELLAR_SPONSOR_SECRET not set"); process.exit(1); }
+if (!USDC_ISSUER_ADDRESS) { console.error("❌ USDC_ISSUER_ADDRESS not set"); process.exit(1); }
 
 const sponsorKP = StellarSdk.Keypair.fromSecret(SPONSOR_SECRET);
 const usdcAsset = new StellarSdk.Asset("USDC", USDC_ISSUER_ADDRESS);
-const SEED_USDC = "0.5000000"; // seed each agent with 0.5 USDC
+const SEED_USDC = "1.0000000";
 
-const AGENT_NAMES = ["oracle", "news", "yield", "tokenomics", "perp", "stellarScout"];
+const AGENT_NAMES = [
+    "oracle", "news", "yield", "tokenomics", "perp",
+    "stellarScout", "protocol", "bridges", "stellar-dex"
+];
 
-async function sleep(ms: number) {
-    return new Promise((r) => setTimeout(r, ms));
-}
+const ENV_KEYS: Record<string, { address: string; secret: string }> = {
+    oracle:       { address: "ORACLE_X402_ADDRESS",       secret: "ORACLE_AGENT_SECRET" },
+    news:         { address: "NEWS_X402_ADDRESS",         secret: "NEWS_AGENT_SECRET" },
+    yield:        { address: "YIELD_X402_ADDRESS",        secret: "YIELD_AGENT_SECRET" },
+    tokenomics:   { address: "TOKENOMICS_X402_ADDRESS",   secret: "TOKENOMICS_AGENT_SECRET" },
+    perp:         { address: "PERP_STATS_X402_ADDRESS",   secret: "PERP_AGENT_SECRET" },
+    stellarScout: { address: "STELLAR_SCOUT_X402_ADDRESS",secret: "STELLAR_SCOUT_AGENT_SECRET" },
+    protocol:     { address: "PROTOCOL_X402_ADDRESS",     secret: "PROTOCOL_AGENT_SECRET" },
+    bridges:      { address: "BRIDGES_X402_ADDRESS",      secret: "BRIDGES_AGENT_SECRET" },
+    "stellar-dex":{ address: "STELLAR_DEX_X402_ADDRESS",  secret: "STELLAR_DEX_AGENT_SECRET" },
+};
 
-async function createAndSetupAgent(name: string): Promise<{ name: string; publicKey: string; secret: string }> {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function createAndSetupAgent(name: string) {
     const agentKP = StellarSdk.Keypair.random();
     console.log(`\n🔑 [${name}] Generated: ${agentKP.publicKey()}`);
 
     const sponsorAccount = await server.loadAccount(sponsorKP.publicKey());
-
-    // Step 1: Create account + add trustline in one transaction
-    // The sponsor creates the agent account and immediately sponsors the trustline reserve.
     const tx = new StellarSdk.TransactionBuilder(sponsorAccount, {
         fee: (Number(StellarSdk.BASE_FEE) * 4).toString(),
         networkPassphrase: NETWORK_PASSPHRASE,
     })
-        .addOperation(
-            StellarSdk.Operation.beginSponsoringFutureReserves({
-                sponsoredId: agentKP.publicKey(),
-            })
-        )
-        .addOperation(
-            StellarSdk.Operation.createAccount({
-                destination: agentKP.publicKey(),
-                startingBalance: "0", // sponsor covers reserves
-            })
-        )
-        .addOperation(
-            StellarSdk.Operation.changeTrust({
-                asset: usdcAsset,
-                source: agentKP.publicKey(),
-            })
-        )
-        .addOperation(
-            StellarSdk.Operation.endSponsoringFutureReserves({
-                source: agentKP.publicKey(),
-            })
-        )
-        .setTimeout(60)
-        .build();
+        .addOperation(StellarSdk.Operation.beginSponsoringFutureReserves({ sponsoredId: agentKP.publicKey() }))
+        .addOperation(StellarSdk.Operation.createAccount({ destination: agentKP.publicKey(), startingBalance: "0" }))
+        .addOperation(StellarSdk.Operation.changeTrust({ asset: usdcAsset, source: agentKP.publicKey() }))
+        .addOperation(StellarSdk.Operation.endSponsoringFutureReserves({ source: agentKP.publicKey() }))
+        .setTimeout(60).build();
 
     tx.sign(sponsorKP);
-    tx.sign(agentKP); // agent must sign changeTrust + endSponsoring
+    tx.sign(agentKP);
 
-    console.log(`  📤 Creating account + USDC trustline (sponsored)...`);
+    console.log(`  📤 Creating account + USDC trustline...`);
     const result = await server.submitTransaction(tx);
     console.log(`  ✅ Created: ${result.hash}`);
+    await sleep(3000);
 
-    await sleep(3000); // wait for ledger
-
-    // Step 2: Seed with USDC (treasury is the issuer — can always send)
     const sponsorAccount2 = await server.loadAccount(sponsorKP.publicKey());
     const seedTx = new StellarSdk.TransactionBuilder(sponsorAccount2, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
+        fee: StellarSdk.BASE_FEE, networkPassphrase: NETWORK_PASSPHRASE,
     })
-        .addOperation(
-            StellarSdk.Operation.payment({
-                destination: agentKP.publicKey(),
-                asset: usdcAsset,
-                amount: SEED_USDC,
-            })
-        )
-        .setTimeout(60)
-        .build();
-
+        .addOperation(StellarSdk.Operation.payment({ destination: agentKP.publicKey(), asset: usdcAsset, amount: SEED_USDC }))
+        .setTimeout(60).build();
     seedTx.sign(sponsorKP);
     const seedResult = await server.submitTransaction(seedTx);
     console.log(`  💸 Seeded ${SEED_USDC} USDC: ${seedResult.hash}`);
@@ -115,16 +87,9 @@ async function createAndSetupAgent(name: string): Promise<{ name: string; public
 }
 
 async function main() {
-    console.log("🚀 Kairos — Agent Wallet Generator");
+    console.log("🚀 Kairos — Agent Wallet Generator (all 9 agents)");
     console.log(`   Treasury: ${sponsorKP.publicKey()}`);
-    console.log(`   USDC Issuer: ${USDC_ISSUER_ADDRESS}`);
-    console.log(`   Agents: ${AGENT_NAMES.join(", ")}\n`);
-
-    if (sponsorKP.publicKey() !== USDC_ISSUER_ADDRESS) {
-        console.warn("⚠️  Warning: STELLAR_SPONSOR_SECRET public key != USDC_ISSUER_ADDRESS");
-        console.warn("   USDC payments only work if the treasury IS the issuer (demo mode).");
-        console.warn("   If using Circle USDC, ensure the treasury has Circle USDC balance.\n");
-    }
+    console.log(`   USDC Issuer: ${USDC_ISSUER_ADDRESS}\n`);
 
     const wallets: Array<{ name: string; publicKey: string; secret: string }> = [];
 
@@ -138,26 +103,19 @@ async function main() {
         }
     }
 
-    // Write keypairs to file
     const outputPath = path.resolve(__dirname, "../agent-wallets.json");
     fs.writeFileSync(outputPath, JSON.stringify(wallets, null, 2));
     console.log(`\n📁 Keypairs saved to: ${outputPath}`);
     console.log("   ⚠️  Keep agent-wallets.json secret and out of git!\n");
 
-    // Print .env additions
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     console.log("Add these to your .env file:\n");
-    const ENV_KEYS: Record<string, string> = {
-        oracle: "ORACLE_X402_ADDRESS",
-        news: "NEWS_X402_ADDRESS",
-        yield: "YIELD_X402_ADDRESS",
-        tokenomics: "TOKENOMICS_X402_ADDRESS",
-        perp: "PERP_STATS_X402_ADDRESS",
-        stellarScout: "STELLAR_SCOUT_X402_ADDRESS",
-    };
     for (const w of wallets) {
-        const key = ENV_KEYS[w.name] || `${w.name.toUpperCase()}_X402_ADDRESS`;
-        console.log(`${key}=${w.publicKey}`);
+        const keys = ENV_KEYS[w.name];
+        if (keys) {
+            console.log(`${keys.address}=${w.publicKey}`);
+            console.log(`${keys.secret}=${w.secret}`);
+        }
     }
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 }

@@ -543,9 +543,10 @@ app.post("/query", queryLimiter, async (req, res) => {
             response: result.response,
             agentsUsed,
             x402Transactions: result.x402Transactions,
+            a2aPayments: result.a2aPayments || [],
             requestId: rid,
             partial: !!result.partial,
-            cost: "0.03", // Flat hackathon price
+            cost: "0.03",
             ragSources: result.ragSources,
         });
     } catch (error) {

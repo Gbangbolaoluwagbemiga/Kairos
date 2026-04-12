@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { Copy, ThumbsUp, ThumbsDown, Check, User, Bot, ExternalLink, Image as ImageIcon, BookOpen } from 'lucide-react';
+import { Copy, ThumbsUp, ThumbsDown, Check, User, Bot, ExternalLink, Image as ImageIcon, BookOpen, ArrowRight } from 'lucide-react';
 import type { RagSourceRef } from '@/contexts/ChatContext';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -10,14 +10,25 @@ import { PaymentPulse } from './PaymentPulse';
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 const AGENT_COLORS: Record<string, { bg: string; dot: string; label: string }> = {
-  oracle:     { bg: '#a78bfa18', dot: '#a78bfa', label: 'Price Oracle'    },
-  news:       { bg: '#60a5fa18', dot: '#60a5fa', label: 'News Scout'      },
-  scout:      { bg: '#34d39918', dot: '#34d399', label: 'Chain Scout'     },
-  yield:      { bg: '#fbbf2418', dot: '#fbbf24', label: 'Yield Optimizer' },
-  tokenomics: { bg: '#f4727218', dot: '#f47272', label: 'Tokenomics'      },
-  nft:        { bg: '#e879f918', dot: '#e879f9', label: 'NFT Scout'       },
-  perp:       { bg: '#38bdf818', dot: '#38bdf8', label: 'Perp Stats'      },
+  oracle:         { bg: '#a78bfa18', dot: '#a78bfa', label: 'Price Oracle'       },
+  news:           { bg: '#60a5fa18', dot: '#60a5fa', label: 'News Scout'         },
+  'stellar-scout':{ bg: '#34d39918', dot: '#34d399', label: 'Stellar Scout'      },
+  scout:          { bg: '#34d39918', dot: '#34d399', label: 'Stellar Scout'      },
+  yield:          { bg: '#fbbf2418', dot: '#fbbf24', label: 'Yield Optimizer'    },
+  tokenomics:     { bg: '#f4727218', dot: '#f47272', label: 'Tokenomics'         },
+  perp:           { bg: '#38bdf818', dot: '#38bdf8', label: 'Perp Stats'         },
+  protocol:       { bg: '#818cf818', dot: '#818cf8', label: 'Protocol Stats'     },
+  bridges:        { bg: '#fb718518', dot: '#fb7185', label: 'Bridge Monitor'     },
+  'stellar-dex':  { bg: '#facc1518', dot: '#facc15', label: 'Stellar DEX'        },
 };
+
+interface A2APayment {
+  from: string;
+  to: string;
+  amount: string;
+  txHash: string;
+  label: string;
+}
 
 interface ChatMessageProps {
   id: string;
@@ -27,12 +38,13 @@ interface ChatMessageProps {
   imagePreview?: string;
   agentsUsed?: string[];
   txHashes?: Record<string, string>;
+  a2aPayments?: A2APayment[];
   partial?: boolean;
   ragSources?: RagSourceRef[];
   onContinue?: () => void;
 }
 
-export function ChatMessage({ id, content, isUser, timestamp, imagePreview, agentsUsed, txHashes, partial, ragSources, onContinue }: ChatMessageProps) {
+export function ChatMessage({ id, content, isUser, timestamp, imagePreview, agentsUsed, txHashes, a2aPayments, partial, ragSources, onContinue }: ChatMessageProps) {
   const { address } = useWallet();
   const [rating, setRating]   = useState<boolean | null>(null);
   const [isRating, setIsRating] = useState(false);
@@ -176,6 +188,36 @@ export function ChatMessage({ id, content, isUser, timestamp, imagePreview, agen
                 </span>
               );
             })}
+          </div>
+        )}
+
+        {/* Agent-to-Agent payment trail */}
+        {!isUser && a2aPayments && a2aPayments.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-1">
+            {a2aPayments.map((p, i) => {
+              const fromMeta = AGENT_COLORS[p.from] ?? { dot: '#888', label: p.from };
+              const toMeta   = AGENT_COLORS[p.to]   ?? { dot: '#888', label: p.to };
+              return (
+                <a
+                  key={i}
+                  href={`https://stellar.expert/explorer/testnet/tx/${p.txHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border text-[9px] font-medium transition-colors hover:brightness-125"
+                  style={{ background: '#ffffff06', borderColor: '#ffffff15', color: '#aaa' }}
+                  title={`Agent-to-Agent: ${p.from} paid ${p.to} ${p.amount} USDC for sub-task coordination`}
+                >
+                  <span style={{ color: fromMeta.dot }}>{fromMeta.label}</span>
+                  <ArrowRight className="w-2.5 h-2.5 opacity-50" />
+                  <span style={{ color: toMeta.dot }}>{toMeta.label}</span>
+                  <span className="ml-0.5 text-emerald-400/70">{p.amount} USDC</span>
+                  <ExternalLink className="w-2 h-2 opacity-30 ml-0.5" />
+                </a>
+              );
+            })}
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-semibold uppercase tracking-widest bg-violet-500/10 text-violet-400 border border-violet-500/20">
+              A2A
+            </span>
           </div>
         )}
 

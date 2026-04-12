@@ -7,13 +7,15 @@ import { ChatInput } from '@/components/chat/ChatInput';
 import { TypingIndicator } from '@/components/chat/TypingIndicator';
 import { useChat } from '@/hooks/useChat';
 import { useWallet } from '@/contexts/WalletContext';
-import { Zap, Bot, TrendingUp, BarChart3, Newspaper, Coins, ArrowRight } from 'lucide-react';
+import { Zap, Bot, TrendingUp, BarChart3, Newspaper, Coins, ArrowRight, Wallet, Brain, ExternalLink } from 'lucide-react';
 
 const AGENT_PROMPTS = [
-  { icon: TrendingUp, label: 'Price Oracle', prompt: 'What is the current price and all-time high (ATH) of XLM?', color: 'hsl(258 85% 65%)' },
-  { icon: Newspaper, label: 'News Scout', prompt: 'What are the latest major crypto news headlines?', color: 'hsl(195 90% 55%)' },
-  { icon: BarChart3, label: 'Chain Scout', prompt: 'What are the top DeFi protocols by TVL right now?', color: 'hsl(152 60% 52%)' },
-  { icon: Coins, label: 'Yield Optimizer', prompt: 'What are the best USDC yield opportunities across DeFi?', color: 'hsl(42 92% 58%)' },
+  { icon: TrendingUp, label: 'Price Oracle', prompt: 'What is the current price and ATH of XLM?', color: '#a78bfa' },
+  { icon: Newspaper, label: 'News Scout', prompt: 'What are the latest major crypto news headlines?', color: '#60a5fa' },
+  { icon: BarChart3, label: 'Protocol Stats', prompt: 'What are the top DeFi protocols by TVL right now?', color: '#818cf8' },
+  { icon: Coins, label: 'Yield Optimizer', prompt: 'What are the best USDC yield opportunities across DeFi?', color: '#fbbf24' },
+  { icon: ArrowRight, label: 'Bridge Monitor', prompt: 'Which bridges support moving assets from ETH to Stellar?', color: '#fb7185' },
+  { icon: Zap, label: 'Stellar DEX', prompt: 'What is the current SDEX volume and top trading pairs on Stellar?', color: '#facc15' },
 ];
 
 const FEATURED_AGENTS = [
@@ -66,6 +68,7 @@ const Index = () => {
                   imagePreview={message.imagePreview}
                   agentsUsed={message.agentsUsed}
                   txHashes={message.txHashes}
+                  a2aPayments={message.a2aPayments}
                   partial={message.partial}
                   ragSources={message.ragSources}
                   onContinue={() => sendMessage('continue')}
@@ -101,48 +104,92 @@ const Index = () => {
 /* ─── Hero state (empty chat) ─────────────────────────────────────────── */
 function HeroState({ onSend, isConnected }: { onSend: (msg: string) => void; isConnected: boolean }) {
   return (
-    <div className="h-full flex flex-col items-center justify-center px-4 py-12 space-y-10">
+    <div className="h-full flex flex-col items-center justify-center px-4 py-10 space-y-8 max-w-3xl mx-auto w-full">
 
-      {/* Brand mark */}
-      <div className="text-center space-y-4 animate-fade-in-up">
-        {/* Logo orb */}
-        <div className="relative mx-auto w-20 h-20 mb-2">
-          <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-violet-500 via-purple-600 to-blue-600 flex items-center justify-center shadow-[0_0_60px_hsl(258_85%_65%/0.4)] animate-glow">
-            <Bot className="w-9 h-9 text-white" />
+      {/* Brand */}
+      <div className="text-center space-y-3 animate-fade-in-up">
+        <div className="relative mx-auto w-16 h-16 mb-1">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500 via-purple-600 to-blue-600 flex items-center justify-center shadow-[0_0_60px_hsl(258_85%_65%/0.4)] animate-glow">
+            <Bot className="w-8 h-8 text-white" />
           </div>
-          {/* Orbit dot */}
-          <div className="absolute top-1 right-1 w-3 h-3 rounded-full bg-yellow-400 shadow-[0_0_8px_hsl(42_92%_58%/0.8)] animate-orbit" />
+          <div className="absolute top-0.5 right-0.5 w-3 h-3 rounded-full bg-yellow-400 shadow-[0_0_8px_hsl(42_92%_58%/0.8)] animate-orbit" />
         </div>
-
         <div>
-          <h1 className="text-5xl md:text-6xl font-display font-semibold leading-tight">
+          <h1 className="text-4xl md:text-5xl font-display font-semibold leading-tight">
             <span className="kairos-gradient">Kairos</span>
           </h1>
-          <p className="mt-3 text-lg text-muted-foreground max-w-md mx-auto text-balance">
-            Your multi-agent crypto AI. Powered by{' '}
-            <span className="text-[hsl(195_90%_55%)] font-medium">Stellar x402</span>.
-            Pay only for what you ask.
+          <p className="mt-2 text-base text-muted-foreground max-w-md mx-auto text-balance">
+            The first multi-agent AI marketplace on{' '}
+            <span className="text-[#7dd3fc] font-medium">Stellar</span>.
+            Every answer triggers a real on-chain{' '}
+            <span className="text-[hsl(195_90%_55%)] font-medium">x402 USDC micropayment</span>.
           </p>
         </div>
-
-        {/* Live stat pills */}
-        <div className="flex flex-wrap justify-center gap-2 mt-1">
+        <div className="flex flex-wrap justify-center gap-2">
           <span className="glass-btn px-3 py-1.5 text-xs text-muted-foreground flex items-center gap-1.5">
-            <span className="status-dot" />
-            9 agents online
+            <span className="status-dot" />9 agents online
           </span>
-          <span className="glass-btn px-3 py-1.5 text-xs text-muted-foreground">
-            <span className="payment-gradient font-semibold">~$0.03</span> UX/chat · on-chain ~0.01 USDC or 0.001 XLM
+          <span className="glass-btn px-3 py-1.5 text-xs font-mono text-emerald-400 border border-emerald-500/20 bg-emerald-500/5">
+            0.01 USDC / agent call
           </span>
           <span className="glass-btn px-3 py-1.5 text-xs text-muted-foreground flex items-center gap-1.5">
-            <Zap className="w-3 h-3 text-yellow-400" />
-            Stellar Testnet
+            <Zap className="w-3 h-3 text-yellow-400" />Stellar Testnet
           </span>
+          <a
+            href="https://stellar.expert/explorer/testnet"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="glass-btn px-3 py-1.5 text-xs text-[hsl(195_90%_55%)] flex items-center gap-1 hover:brightness-125 transition-all"
+          >
+            Live on-chain <ExternalLink className="w-2.5 h-2.5" />
+          </a>
         </div>
       </div>
 
-      {/* Agent quick-start grid */}
-      <div className="w-full max-w-2xl animate-slide-up delay-200">
+      {/* How it works */}
+      <div className="w-full animate-slide-up delay-100">
+        <p className="text-xs text-muted-foreground text-center mb-3 uppercase tracking-widest">How it works</p>
+        <div className="grid grid-cols-3 gap-3">
+          {[
+            { icon: Wallet,  step: '01', title: 'Connect wallet', desc: 'Link your Freighter Stellar wallet. No subscription, no API key.' },
+            { icon: Brain,   step: '02', title: 'Ask anything',   desc: 'The orchestrator routes your query to the best specialist agents.' },
+            { icon: Zap,     step: '03', title: 'Agents pay each other', desc: 'Treasury pays agents 0.01 USDC. Agents pay sub-agents. All on Stellar.' },
+          ].map(({ icon: Icon, step, title, desc }) => (
+            <div key={step} className="glass-card p-3 flex flex-col gap-2 relative overflow-hidden">
+              <div className="absolute top-2 right-2 text-[10px] font-mono text-muted-foreground/30 font-bold">{step}</div>
+              <div className="w-8 h-8 rounded-lg bg-violet-500/15 border border-violet-500/25 flex items-center justify-center">
+                <Icon className="w-4 h-4 text-violet-400" />
+              </div>
+              <p className="text-xs font-semibold text-foreground">{title}</p>
+              <p className="text-[10px] text-muted-foreground leading-relaxed">{desc}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* x402 live demo strip */}
+      <div className="w-full animate-slide-up delay-150">
+        <div className="glass-card border border-emerald-500/20 bg-emerald-500/5 p-3 rounded-xl">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] font-semibold uppercase tracking-widest text-emerald-400">x402 Payment Flow</span>
+            <span className="text-[9px] text-muted-foreground/50 font-mono">Stellar Testnet</span>
+          </div>
+          <div className="flex items-center gap-2 text-[10px] font-mono overflow-x-auto scrollbar-hidden">
+            <span className="text-violet-300 shrink-0">You</span>
+            <ArrowRight className="w-3 h-3 text-muted-foreground/40 shrink-0" />
+            <span className="text-[hsl(195_90%_55%)] shrink-0">Kairos Orchestrator</span>
+            <ArrowRight className="w-3 h-3 text-muted-foreground/40 shrink-0" />
+            <span className="text-amber-400 shrink-0">Agent A</span>
+            <span className="text-[9px] text-emerald-400 shrink-0 bg-emerald-500/10 px-1 rounded">0.01 USDC ✓</span>
+            <ArrowRight className="w-3 h-3 text-muted-foreground/40 shrink-0" />
+            <span className="text-sky-400 shrink-0">Agent B</span>
+            <span className="text-[9px] text-emerald-400 shrink-0 bg-emerald-500/10 px-1 rounded">0.005 USDC A2A ✓</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Quick-start prompts */}
+      <div className="w-full animate-slide-up delay-200">
         <p className="text-xs text-muted-foreground text-center mb-3 uppercase tracking-widest">Try an agent</p>
         <div className="grid grid-cols-2 gap-2">
           {AGENT_PROMPTS.map(({ icon: Icon, label, prompt, color }) => (
@@ -150,46 +197,26 @@ function HeroState({ onSend, isConnected }: { onSend: (msg: string) => void; isC
               key={label}
               onClick={() => isConnected && onSend(prompt)}
               disabled={!isConnected}
-              className="glass-card glass-shimmer p-4 text-left group disabled:opacity-40 disabled:cursor-not-allowed"
-              id={`quick-${label.toLowerCase().replace(' ', '-')}`}
+              className="glass-card glass-shimmer p-3 text-left group disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <div className="flex items-start gap-3">
-                <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+              <div className="flex items-start gap-2.5">
+                <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
                   style={{ background: `${color}18`, border: `1px solid ${color}30` }}>
-                  <Icon className="w-4 h-4" style={{ color }} />
+                  <Icon className="w-3.5 h-3.5" style={{ color }} />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-sm font-medium text-foreground">{label}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5 truncate-2 leading-relaxed">{prompt}</p>
+                  <p className="text-xs font-semibold text-foreground">{label}</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5 line-clamp-2 leading-relaxed">{prompt}</p>
                 </div>
-              </div>
-              <div className="flex items-center justify-end mt-2">
-                <ArrowRight className="w-3.5 h-3.5 text-muted-foreground/40 group-hover:text-primary group-hover:translate-x-0.5 transition-all" />
               </div>
             </button>
           ))}
         </div>
       </div>
 
-      {/* Featured agents mini-row */}
-      <div className="w-full max-w-2xl animate-slide-up delay-300">
-        <p className="text-xs text-muted-foreground text-center mb-3 uppercase tracking-widest">Active agents</p>
-        <div className="flex gap-2 overflow-x-auto scrollbar-hidden pb-1">
-          {FEATURED_AGENTS.map((agent) => (
-            <div key={agent.id} className="glass-card flex-shrink-0 px-3 py-2 flex items-center gap-2 min-w-[160px]">
-              <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: agent.color, boxShadow: `0 0 6px ${agent.color}99` }} />
-              <div className="min-w-0">
-                <p className="text-xs font-medium text-foreground truncate">{agent.name}</p>
-                <p className="text-[10px] text-muted-foreground">${agent.price} USDC/call</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
       {!isConnected && (
         <p className="text-xs text-muted-foreground animate-fade-in delay-400">
-          Connect your Stellar wallet to start querying agents
+          Connect your Freighter wallet above to start — agents are waiting
         </p>
       )}
     </div>

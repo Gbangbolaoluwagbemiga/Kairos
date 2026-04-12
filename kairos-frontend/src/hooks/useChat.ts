@@ -88,6 +88,7 @@ export function useChat() {
         timestamp: new Date(),
         agentsUsed: data.agentsUsed,
         txHashes: data.x402Transactions,
+        a2aPayments: Array.isArray(data.a2aPayments) ? data.a2aPayments : undefined,
         partial: !!data.partial,
         ragSources: Array.isArray(data.ragSources) ? data.ragSources : undefined,
       };

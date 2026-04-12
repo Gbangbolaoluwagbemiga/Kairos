@@ -1,4 +1,4 @@
-// config.ts - Kairos Stellar Multi-Agent Economy (updated: agent addresses v2)
+// config.ts - Kairos Stellar Multi-Agent Economy (updated: agent addresses v3 + A2A payments)
 import { Asset, Keypair, StrKey } from "@stellar/stellar-sdk";
 
 // Circle Testnet USDC on Stellar (used when no treasury / explicit issuer)

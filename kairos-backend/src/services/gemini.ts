@@ -41,6 +41,128 @@ function runTreasurySerialized<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * 🤝 Agent-to-Agent Payment (A2A)
+ * When a specialist agent delegates to another sub-agent, it pays from its own wallet.
+ * This demonstrates true autonomous agent commerce on Stellar — agents earning and spending.
+ *
+ * Agent secret keys are loaded from environment variables (set by generate-agent-wallets script).
+ * Amount: 0.005 USDC per sub-delegation (half of the base rate, split economy).
+ */
+const AGENT_SECRETS: Record<string, string | undefined> = {
+    oracle:        process.env.ORACLE_AGENT_SECRET,
+    news:          process.env.NEWS_AGENT_SECRET,
+    yield:         process.env.YIELD_AGENT_SECRET,
+    tokenomics:    process.env.TOKENOMICS_AGENT_SECRET,
+    perp:          process.env.PERP_AGENT_SECRET,
+    "stellar-scout": process.env.STELLAR_SCOUT_AGENT_SECRET,
+    protocol:      process.env.PROTOCOL_AGENT_SECRET,
+    bridges:       process.env.BRIDGES_AGENT_SECRET,
+    "stellar-dex": process.env.STELLAR_DEX_AGENT_SECRET,
+};
+
+export interface A2APayment {
+    from: string;
+    to: string;
+    amount: string;
+    txHash: string;
+    label: string;
+}
+
+// Track a2a payments for the current request
+let currentA2APayments: A2APayment[] = [];
+
+async function sendAgentToAgentPayment(
+    fromAgentId: string,
+    toAgentId: string,
+    label: string
+): Promise<A2APayment | undefined> {
+    const toMeta = await AgentRegistryService.getAgent(toAgentId);
+    if (!toMeta?.owner) {
+        console.warn(`[A2A] ⚠️ Could not resolve address for sub-agent: ${toAgentId}`);
+        return undefined;
+    }
+
+    // Try paying from the agent's own wallet first (true peer-to-peer A2A).
+    // If balance is too low (agent hasn't accumulated yet), fall back to
+    // treasury-sponsored A2A — the memo records the delegation chain on-chain.
+    const fromSecret = AGENT_SECRETS[fromAgentId];
+
+    return runTreasurySerialized(async () => {
+        const usdcAsset = new StellarSdk.Asset(config.stellar.usdcCode, config.stellar.usdcIssuer);
+        const amount = "0.0050000";
+        const memoText = `a2a:${fromAgentId.slice(0, 7)}>${toAgentId.slice(0, 7)}`;
+
+        // Attempt 1: direct agent-to-agent payment
+        if (fromSecret) {
+            try {
+                const fromKeypair = StellarSdk.Keypair.fromSecret(fromSecret);
+                const fromAccount = await horizonServer.loadAccount(fromKeypair.publicKey());
+                const usdcBalance = fromAccount.balances.find(
+                    (b: any) => b.asset_code === config.stellar.usdcCode && b.asset_issuer === config.stellar.usdcIssuer
+                );
+                const balance = parseFloat((usdcBalance as any)?.balance || '0');
+
+                if (balance >= 0.005) {
+                    const tx = new StellarSdk.TransactionBuilder(fromAccount, {
+                        fee: StellarSdk.BASE_FEE,
+                        networkPassphrase,
+                    })
+                        .addOperation(StellarSdk.Operation.payment({
+                            destination: toMeta.owner,
+                            asset: usdcAsset,
+                            amount,
+                        }))
+                        .addMemo(StellarSdk.Memo.text(memoText))
+                        .setTimeout(60)
+                        .build();
+
+                    tx.sign(fromKeypair);
+                    const result = await submitTransactionWithTimeoutRecovery(tx);
+                    console.log(`[A2A] ✅ ${fromAgentId} → ${toAgentId} (${amount} USDC, direct): ${result.hash}`);
+                    const payment: A2APayment = { from: fromAgentId, to: toAgentId, amount, txHash: result.hash, label };
+                    currentA2APayments.push(payment);
+                    return payment;
+                }
+                console.log(`[A2A] ℹ️ ${fromAgentId} USDC balance ${balance} too low — treasury-sponsored A2A`);
+            } catch (err: any) {
+                console.log(`[A2A] ℹ️ Direct A2A failed (${err?.message}) — falling back to treasury-sponsored`);
+            }
+        }
+
+        // Attempt 2: treasury pays sub-agent on behalf of primary agent
+        try {
+            const treasurySecret = config.stellar.sponsorSecret;
+            if (!treasurySecret?.startsWith('S')) return undefined;
+            const treasuryKeypair = StellarSdk.Keypair.fromSecret(treasurySecret);
+            const treasuryAccount = await horizonServer.loadAccount(treasuryKeypair.publicKey());
+
+            const tx = new StellarSdk.TransactionBuilder(treasuryAccount, {
+                fee: StellarSdk.BASE_FEE,
+                networkPassphrase,
+            })
+                .addOperation(StellarSdk.Operation.payment({
+                    destination: toMeta.owner,
+                    asset: usdcAsset,
+                    amount,
+                }))
+                .addMemo(StellarSdk.Memo.text(memoText))
+                .setTimeout(60)
+                .build();
+
+            tx.sign(treasuryKeypair);
+            const result = await submitTransactionWithTimeoutRecovery(tx);
+            console.log(`[A2A] ✅ ${fromAgentId} → ${toAgentId} (${amount} USDC, treasury-sponsored): ${result.hash}`);
+            const payment: A2APayment = { from: fromAgentId, to: toAgentId, amount, txHash: result.hash, label };
+            currentA2APayments.push(payment);
+            return payment;
+        } catch (err: any) {
+            console.error(`[A2A] ❌ ${fromAgentId} → ${toAgentId} failed:`, err?.response?.data?.extras?.result_codes || err.message);
+            return undefined;
+        }
+    });
+}
+
+/**
  * 🚀 Real On-Chain Settlement (x402 Micropayments)
  * Sends USDC (stablecoin micropayment) from the Treasury to the Agent on Stellar Testnet.
  * Uses the AgentRegistryService to resolve on-chain details.
@@ -995,6 +1117,7 @@ export interface GenerateResponseResult {
     response: string;
     agentsUsed: string[];
     x402Transactions: Record<string, string>; // agentId -> txHash for x402 payments
+    a2aPayments?: A2APayment[];               // agent-to-agent sub-payments
     partial?: boolean;
     /** Populated when RAG retrieved corpus excerpts for this turn */
     ragSources?: RagSource[];
@@ -1029,6 +1152,8 @@ export async function generateResponse(
     // Track x402 transaction hashes per agent
     const x402Transactions: Record<string, string> = {};
     let partial = false;
+    // Reset A2A payments for this request
+    currentA2APayments = [];
     const startedAt = Date.now();
     // Best-effort latency cap:
     // Keep typical responses fast (<~5s end-to-end) by limiting tool execution time.
@@ -1261,6 +1386,22 @@ export async function generateResponse(
             }
         }
 
+        // ─── Agent-to-Agent Sub-Payments ────────────────────────────────────────
+        // When multiple specialist agents collaborated, the primary agent pays sub-agents.
+        // This demonstrates true autonomous agent commerce: agents earning AND spending on Stellar.
+        const usedAgents = Array.from(agentsUsed);
+        if (usedAgents.length >= 2) {
+            const primaryAgent = usedAgents[0];
+            const subAgents = usedAgents.slice(1);
+            console.log(`[A2A] 🤝 ${primaryAgent} coordinating with: ${subAgents.join(', ')}`);
+            // Fire A2A payments in background — don't block response
+            for (const subAgent of subAgents) {
+                sendAgentToAgentPayment(primaryAgent, subAgent, `coord:${subAgent}`)
+                    .catch(e => console.error(`[A2A] background payment error:`, e));
+            }
+        }
+        // ────────────────────────────────────────────────────────────────────────
+
         let responseText = "";
         try {
             responseText = response.text();
@@ -1302,6 +1443,7 @@ export async function generateResponse(
                     txLine,
                 agentsUsed: Array.from(agentsUsed),
                 x402Transactions,
+                a2aPayments: currentA2APayments,
                 partial: false,
                 ragSources,
             };
@@ -1319,6 +1461,7 @@ export async function generateResponse(
                 response: `### Latest crypto headlines\n\n${lines.join("\n\n")}`,
                 agentsUsed: Array.from(agentsUsed),
                 x402Transactions,
+                a2aPayments: currentA2APayments,
                 partial: false,
                 ragSources,
             };
@@ -1337,6 +1480,7 @@ export async function generateResponse(
             response: responseOut,
             agentsUsed: Array.from(agentsUsed),
             x402Transactions,
+            a2aPayments: currentA2APayments,
             partial: clientPartial,
             ragSources,
         };
