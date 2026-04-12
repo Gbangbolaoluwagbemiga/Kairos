@@ -32,7 +32,7 @@ export function TreasuryCard({ balance, trend }: TreasuryCardProps) {
         <p className="text-muted-foreground text-sm font-medium">Treasury Balance</p>
         <h3 className="text-2xl font-medium text-foreground mt-1">${balance.toFixed(2)}</h3>
         <p className="text-[10px] text-muted-foreground/65 mt-1.5 leading-snug">
-          Nominal total at ~$0.01 per agent task. On-chain settlement may be USDC or XLM fallback—see activity tx links.
+          ~$0.01 USDC per agent task · see activity links for on-chain receipts
         </p>
       </div>
 

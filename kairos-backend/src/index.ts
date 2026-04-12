@@ -82,24 +82,11 @@ function recordReceipt(requestId: string, agentId: string, txHash: string) {
     }
 }
 
-function normalizeAgentId(agentId: string): string {
-    if (agentId === "stellar-scout" || agentId === "protocol" || agentId === "bridges" || agentId === "stellar-dex") {
-        return "scout";
-    }
-    return agentId;
-}
-
 function resolveTxHashForAgent(
     x402Transactions: Record<string, string | undefined>,
     agentId: string
 ): string | undefined {
-    const direct = x402Transactions[agentId];
-    if (direct) return direct;
-    const normalized = normalizeAgentId(agentId);
-    if (normalized !== agentId && x402Transactions[normalized]) {
-        return x402Transactions[normalized];
-    }
-    return undefined;
+    return x402Transactions[agentId];
 }
 
 /** Micropayment memos use `x402:{geminiAgentId}:...` — map marketplace / dashboard id → memo prefix. */
@@ -597,6 +584,7 @@ app.get("/providers", async (req, res) => {
             return {
                 ...p,
                 rating: s?.rating || 0,
+                totalRatings: s?.totalRatings || 0,
                 usageCount: s?.usageCount || 0,
                 avgResponseTime: s?.avgResponseTimeMs ? (s.avgResponseTimeMs / 1000).toFixed(1) + 's' : '0s'
             };

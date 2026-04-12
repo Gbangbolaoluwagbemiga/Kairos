@@ -1,202 +1,216 @@
-# Kairos
+# Kairos — Stellar Agentic Marketplace
 
-Kairos is a multi-agent intelligence platform for crypto markets built on Stellar rails.
+> The premier multi-agent AI marketplace on Stellar. Ask a question, watch specialist agents compete, pay, and respond — all on-chain via x402 USDC micropayments.
 
-It orchestrates specialized AI agents (price, news, yields, tokenomics, perps, Stellar analytics), settles paid interactions on Stellar, and returns verifiable transaction receipts to the application layer.
+---
 
-<div align="center">
-  <img src="./kairos-frontend/public/og-image.png" alt="Kairos Banner" width="100%" />
-</div>
+## Overview
 
-## Live References
+Kairos is a production-grade agentic application built on Stellar. Users connect their Freighter wallet, ask questions in natural language, and the AI orchestrator routes each query to the best specialist agents. Every agent call triggers a real USDC micropayment from the treasury to the agent's Stellar account — fully auditable on-chain.
 
-- Backend (Railway): `https://kairos-chatbox.up.railway.app`
-- Soroban Agent Registry (testnet): `CBLVIPCOGFNDLBGZ6ZQ2S3NPSA2CU3H6EZZJXYKBKHLTQ2MKJWPRQZG5`
+**9 specialist agents:**
 
-## Key Capabilities
+| Agent | ID | Capability |
+|---|---|---|
+| Price Oracle | `oracle` | Real-time prices, market cap, ATH via CoinGecko |
+| News Scout | `news` | Crypto news, sentiment, trending topics |
+| Yield Optimizer | `yield` | DeFi yields across 500+ protocols |
+| Tokenomics Analyzer | `tokenomics` | Supply, unlocks, inflation models |
+| Stellar Scout | `stellar-scout` | Stellar DeFi yields (Blend, Aquarius), account analysis |
+| Perp Stats | `perp` | Perpetual futures, funding rates, open interest |
+| Protocol Stats | `protocol` | TVL, fees, revenue via DeFiLlama |
+| Bridge Monitor | `bridges` | Cross-chain bridge volumes |
+| Stellar DEX | `stellar-dex` | SDEX order book depth, trading pairs |
 
-- Multi-agent orchestration with parallel tool execution.
-- On-chain settlement receipts for agent tasks (`x402Transactions` map).
-- Soroban-backed service discovery and pricing for agent metadata.
-- Wallet-based trustline setup and testnet funding UX.
-- Paid endpoint flow for x402-style API interactions.
+---
 
-## Repository Layout
+## Architecture
 
-- `kairos-backend/` — Node.js + TypeScript orchestration API.
-- `kairos-frontend/` — React + Vite client app.
-- `contracts/agent-registry/` — Soroban smart contract for agent metadata.
-
-## Architecture Overview
-
-1. Client sends query to `POST /query`.
-2. Backend orchestrator routes work across specialist agents.
-3. Settlement transaction is submitted on Stellar per paid work item.
-4. API response returns content + settlement receipts.
-5. Frontend renders receipts with explorer-proof links.
-
-## On-Chain Components
-
-### Soroban Agent Registry
-
-The contract stores:
-
-- owner address
-- service type
-- task price
-- reputation and task counters
-
-Current deployed contract (testnet):
-
-- `CBLVIPCOGFNDLBGZ6ZQ2S3NPSA2CU3H6EZZJXYKBKHLTQ2MKJWPRQZG5`
-
-Quick verification:
-
-```bash
-stellar contract invoke --network testnet --source kairos --id CBLVIPCOGFNDLBGZ6ZQ2S3NPSA2CU3H6EZZJXYKBKHLTQ2MKJWPRQZG5 -- get_agents_by_service --service_type price
-stellar contract invoke --network testnet --source kairos --id CBLVIPCOGFNDLBGZ6ZQ2S3NPSA2CU3H6EZZJXYKBKHLTQ2MKJWPRQZG5 -- get_agents_by_service --service_type news
-stellar contract invoke --network testnet --source kairos --id CBLVIPCOGFNDLBGZ6ZQ2S3NPSA2CU3H6EZZJXYKBKHLTQ2MKJWPRQZG5 -- get_agents_by_service --service_type stellar
+```
+kairos-frontend/     React + Vite + TailwindCSS (deployed on Vercel/Railway)
+kairos-backend/      Node.js + Express + TypeScript (deployed on Railway)
+  src/
+    index.ts              API routes, activity feed, treasury endpoints
+    config.ts             All agent addresses, network config, pricing
+    services/
+      gemini.ts           AI orchestrator — tool routing, x402 payments
+      search.ts           Google Search grounding (Gemini 2.0 Flash)
+      agent-registry.ts   Mock registry → resolves agent address from ID
+      price-oracle.ts     CoinGecko integration
+      news-scout.ts       Stellar Horizon news feed
+      yield-optimizer.ts  DeFi yield aggregation
+      tokenomics-service.ts Token supply & unlock data
+      defillama.ts        DeFiLlama TVL/fees/bridges
+      perp-stats/         Perpetuals data from 7+ exchanges
+      stellar-analytics.ts SDEX stats, Blend yields, account lookup
+      rag.ts              RAG corpus indexing + semantic search
+      supabase.ts         Chat history, ratings, response time logs
+      stellar.ts          Horizon server, payment utilities
+    routes/
+      x402-agent-routes.ts  Paywalled API endpoints (demo)
+  db/
+    schema.sql            Supabase table definitions (run once)
+  scripts/
+    generate-agent-wallets.ts  Create new agent accounts with USDC trustlines
+    check-agent-balances.ts    Check USDC balances for all 9 agents
+    fund-agents.ts             Top up agent USDC balances from treasury
+    x402-auto-refill.ts        Auto-refill agents below threshold
+    register-agents-onchain.ts Register agents on Soroban contract
+    simulate-agent-traffic.ts  Load-test agent payments
+    list-models.ts             List available Gemini models
+  rag-corpus/
+    kairos-knowledge.md   Domain knowledge for RAG
+    sources.urls          External URLs indexed at startup
+contracts/              Soroban smart contracts (agent registry)
 ```
 
-### USDC Asset Model
+---
 
-Kairos uses the Stellar asset model `USDC:<issuer>`.
-
-- If **`USDC_ISSUER_ADDRESS` is unset** and **`STELLAR_SPONSOR_SECRET`** is set, the backend uses **treasury-issued demo USDC** — the **same** asset as **Fund Wallet → USDC Faucet** (`/api/stellar/usdc/*`). Micropayments then match what users fund in the app; XLM is only a fallback if that path still cannot pay.
-- Set **`USDC_ISSUER_ADDRESS`** (e.g. Circle testnet issuer) to use a different USDC; ensure treasury and agent accounts have the correct trustlines and balances.
-
-## API Surface
-
-### Core
-
-- `GET /health`
-- `POST /query`
-
-### Stellar Utilities
-
-- `POST /api/stellar/sponsor`
-- `GET /api/stellar/balance/:address`
-- `POST /api/stellar/usdc/trustline-xdr`
-- `POST /api/stellar/submit-xdr`
-- `POST /api/stellar/usdc/faucet`
-
-### Paid Endpoint Flow
-
-- `GET /api/x402/health`
-- `GET|POST /api/x402/*`
-
-Flow: call -> payment required -> pay -> retry with tx hash.
-
-## Local Development
+## Quick Start (Local)
 
 ### Prerequisites
-
 - Node.js 20+
-- npm
-- Freighter (or compatible Stellar wallet)
-- Stellar testnet treasury secret
+- A funded Stellar testnet account (treasury)
+- Freighter browser wallet
 
-### Install
-
-```bash
-cd kairos-backend && npm install
-cd ../kairos-frontend && npm install
-```
-
-### Backend Environment (`kairos-backend/.env`)
-
-Required:
-
-- `GEMINI_API_KEY`
-- `STELLAR_SPONSOR_SECRET`
-- `STELLAR_NETWORK` (`testnet` or `public`)
-- `AGENT_REGISTRY_CONTRACT_ID`
-
-Optional:
-
-- `USDC_ISSUER_ADDRESS` — omit to use **treasury-issued demo USDC** (aligned with in-app faucet); set to Circle (or another) issuer if you want that asset instead.
-
-Recommended:
-
-- `ALLOWED_ORIGINS`
-- `SUPABASE_URL`
-- `SUPABASE_ANON_KEY`
-- `COINGECKO_API_KEY`
-
-Optional addresses:
-
-- `ORACLE_X402_ADDRESS`
-- `NEWS_X402_ADDRESS`
-- `YIELD_X402_ADDRESS`
-- `TOKENOMICS_X402_ADDRESS`
-- `PERP_STATS_X402_ADDRESS`
-- `STELLAR_SCOUT_X402_ADDRESS`
-
-### RAG (optional)
-
-When enabled, the backend builds a **hybrid index**: local `rag-corpus/*.md` **plus** HTTPS pages listed in **`rag-corpus/sources.urls`** (one URL per line) and/or **`KAIROS_RAG_URLS`** (comma-separated). Those URLs are fetched at index time (docs, arXiv abstract pages, etc.), converted to plain text, chunked, and embedded with Gemini **`gemini-embedding-001`** (override with `KAIROS_RAG_EMBED_MODEL`). Retrieved chunks include the **canonical URL** when the hit came from the web so answers can cite real sources. Only **https** origins are allowed (basic SSRF protection). Tune fetch with `KAIROS_RAG_FETCH_TIMEOUT_MS`, `KAIROS_RAG_FETCH_MAX_BYTES`, `KAIROS_RAG_FETCH_GAP_MS`. Live market data still comes from tools. Disable RAG with `KAIROS_RAG=0`. **`KAIROS_RAG_STRICT=1` (default)** runs RAG only when the user message looks like a **Kairos / x402 / deployment / docs** question (so generic Stellar or market questions do not always surface the same web docs). Set **`KAIROS_RAG_STRICT=0`** to always attempt vector retrieval. Other knobs: `KAIROS_RAG_MIN_SCORE` (default `0.32`), `KAIROS_RAG_TOP_K` (default `24`, max ranked chunks scanned before **deduping by URL / file**), `KAIROS_RAG_MAX_CHUNKS`, `KAIROS_RAG_BUDGET_MS`, `KAIROS_RAG_FILES`, `KAIROS_RAG_DIR`.
-
-### Frontend Environment (`kairos-frontend/.env`)
-
-- `VITE_API_URL` (for example `http://localhost:3001` for local)
-- `VITE_ADMIN_ADDRESS` (optional)
-
-### Run
+### Backend
 
 ```bash
-cd kairos-backend && npm run dev
-cd kairos-frontend && npm run dev
-```
-
-## Deployment
-
-### Backend (Railway)
-
-- Set service root to `kairos-backend`.
-- Use provided `Dockerfile` and `railway.toml`.
-- Configure required backend variables.
-- Verify:
-
-```bash
-curl https://<your-backend-domain>/health
+cd kairos-backend
+cp .env.example .env   # fill in required values
+npm install
+npm run dev
 ```
 
 ### Frontend
 
-- Deploy independently (Vercel, Netlify, or Railway static).
-- Set `VITE_API_URL=https://<your-backend-domain>`.
+```bash
+cd kairos-frontend
+npm install
+npm run dev
+```
 
-## One-Time: Register Agents On-Chain
+Frontend runs at `http://localhost:5173`, backend at `http://localhost:3001`.
+
+---
+
+## Environment Variables
+
+### Backend (`kairos-backend/.env`)
+
+**Required:**
+
+| Variable | Description |
+|---|---|
+| `GEMINI_API_KEY` | Google AI Studio API key |
+| `STELLAR_SPONSOR_SECRET` | Treasury private key (S...) |
+| `USDC_ISSUER_ADDRESS` | Treasury public key (= USDC issuer in demo mode) |
+
+**Stellar config:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `STELLAR_NETWORK` | `testnet` | `testnet` or `public` |
+| `PORT` | `3001` | HTTP port |
+| `ALLOWED_ORIGINS` | localhost variants | CORS allowed origins |
+
+**Agent addresses (all 9 required):**
+
+```
+ORACLE_X402_ADDRESS
+NEWS_X402_ADDRESS
+YIELD_X402_ADDRESS
+TOKENOMICS_X402_ADDRESS
+PERP_STATS_X402_ADDRESS
+STELLAR_SCOUT_X402_ADDRESS
+PROTOCOL_X402_ADDRESS
+BRIDGES_X402_ADDRESS
+STELLAR_DEX_X402_ADDRESS
+```
+
+**Optional (app degrades gracefully):**
+
+| Variable | Effect if missing |
+|---|---|
+| `COINGECKO_API_KEY` | Price oracle hits public rate limits |
+| `SUPABASE_URL` + `SUPABASE_ANON_KEY` | No persistent chat history, ratings, or response time tracking |
+
+### Frontend (`kairos-frontend/.env`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `VITE_API_URL` | `http://localhost:3001` | Backend URL |
+| `VITE_ADMIN_ADDRESS` | _(empty)_ | Wallet address shown with Admin badge |
+
+---
+
+## Agent Wallet Setup
+
+Each agent needs a Stellar account with a USDC trustline before it can receive payments.
 
 ```bash
 cd kairos-backend
-export AGENT_REGISTRY_CONTRACT_ID="CBLVIPCOGFNDLBGZ6ZQ2S3NPSA2CU3H6EZZJXYKBKHLTQ2MKJWPRQZG5"
-# Each agent signs its own registration (testnet only)
 
-export ORACLE_AGENT_SECRET="S..."
-export NEWS_AGENT_SECRET="S..."
-export YIELD_AGENT_SECRET="S..."
-export TOKENOMICS_AGENT_SECRET="S..."
-export PERP_AGENT_SECRET="S..."
-export STELLAR_SCOUT_AGENT_SECRET="S..."
-npm run registry:register
+# Generate new agent wallets (creates accounts + USDC trustlines + seeds 1 USDC each)
+npx tsx scripts/generate-agent-wallets.ts
+
+# Check current balances
+npx tsx scripts/check-agent-balances.ts
+
+# Top up agents below 1 USDC
+npx tsx scripts/fund-agents.ts
 ```
 
-## Verification Checklist
+The script outputs `.env` lines ready to paste. Keep `agent-wallets.json` secret — it contains private keys.
 
-1. `GET /health` returns `status: ok`.
-2. Registry queries return IDs by service type.
-3. Wallet can add trustline and receive testnet USDC.
-4. Query flow returns receipts (`x402Transactions`).
-5. Explorer links resolve to real testnet transactions.
-6. Paid endpoint flow succeeds with tx hash.
+---
 
-## Known Constraints
+## Database Setup (Supabase)
 
-- Some market intelligence is API-backed (not on-chain data).
-- Testnet asset behavior depends on issuer + trustline setup.
-- Testnet reliability can vary during RPC/Horizon congestion.
+Run `db/schema.sql` once in the Supabase SQL Editor. It creates:
+- `chat_sessions` — per-wallet conversation threads
+- `chat_messages` — full message history with tx hashes
+- `message_ratings` — thumbs up/down per agent (drives ratings)
+- `query_logs` — response times per agent (drives live stats)
 
-## License
+---
 
-MIT
+## Deployment
+
+### Backend → Railway
+
+Set all environment variables from the table above in Railway's Variables tab, then connect the `kairos-backend/` directory. `railway.toml` and `Dockerfile` handle the rest.
+
+### Frontend → Vercel / Railway
+
+Set `VITE_API_URL` to your Railway backend URL. `vercel.json` includes SPA rewrite rules.
+
+---
+
+## x402 Payment Flow
+
+1. User sends a message → backend starts a chat session
+2. Gemini orchestrator routes to specialist agents via function calls
+3. For each agent call, treasury sends **0.01 USDC** to that agent's Stellar address
+4. Transaction hash is returned alongside the AI response
+5. Dashboard shows live activity feed with Stellar Expert links
+
+**Payment path:** Treasury → Agent wallet (USDC, Stellar testnet)  
+**Network fee:** 0.00001 XLM (paid by treasury, separate from agent payment)
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| AI | Gemini 3 Flash Preview (Google) |
+| Search grounding | Gemini Google Search (built-in) |
+| Blockchain | Stellar (Horizon API, Soroban) |
+| Payments | x402 USDC micropayments |
+| Prices | CoinGecko API |
+| DeFi data | DeFiLlama API |
+| Database | Supabase (PostgreSQL) |
+| Backend | Node.js + Express + TypeScript |
+| Frontend | React + Vite + TailwindCSS + shadcn/ui |
+| Wallet | Freighter (Stellar browser wallet) |

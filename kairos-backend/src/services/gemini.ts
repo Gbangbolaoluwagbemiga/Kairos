@@ -9,7 +9,7 @@ import { config } from "../config.js";
 import { fetchPrice, PriceData } from "./price-oracle.js";
 import { perpStatsService } from "./perp-stats/PerpStatsService.js";
 import { StellarAnalyticsService } from "./stellar-analytics.js";
-import { searchWeb as groqSearch } from "./groq.js";
+import { searchWeb as groqSearch } from "./search.js";
 import * as defillama from "./defillama.js";
 import * as newsScout from "./news-scout.js";
 import * as yieldOptimizer from "./yield-optimizer.js";
@@ -24,6 +24,12 @@ import { retrieveRagAugmentation, type RagSource } from "./rag.js";
  * each tx reused the same account `sequence`, causing tx_bad_seq; parallel Horizon submits also time out.
  */
 let treasuryPaymentQueue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Cache: agent address → whether it has USDC trustline.
+ * Populated on first payment; saves one Horizon loadAccount per subsequent call.
+ */
+const agentUsdcTrustlineCache = new Map<string, boolean>();
 
 function runTreasurySerialized<T>(fn: () => Promise<T>): Promise<T> {
     const next = treasuryPaymentQueue.then(() => fn());
@@ -62,7 +68,6 @@ async function sendAgentPayment(agentId: string, label: string): Promise<string 
         try {
             const sourceKeypair = StellarSdk.Keypair.fromSecret(secret);
             const sourcePublicKey = sourceKeypair.publicKey();
-            const sourceAccount = await horizonServer.loadAccount(sourceKeypair.publicKey());
             const usdcAsset = new StellarSdk.Asset(config.stellar.usdcCode, config.stellar.usdcIssuer);
             const sourceIsIssuer = sourcePublicKey === config.stellar.usdcIssuer;
 
@@ -70,55 +75,73 @@ async function sendAgentPayment(agentId: string, label: string): Promise<string 
             let paidCurrency: "USDC" | "XLM" = "USDC";
             let useUsdc = true;
 
-            if (!sourceIsIssuer) {
-                const treasuryHasUsdcTrustline = sourceAccount.balances.some(
-                    (b: any) => b.asset_code === config.stellar.usdcCode && b.asset_issuer === config.stellar.usdcIssuer
-                );
-                if (!treasuryHasUsdcTrustline) {
-                    useUsdc = false;
-                    console.warn(
-                        `[x402-Stellar] ⚠️ Treasury ${sourcePublicKey} has no ${config.stellar.usdcCode}:${config.stellar.usdcIssuer} trustline. Falling back to XLM.`
+            // Check destination trustline — use cache to avoid an extra loadAccount each payment
+            const cachedTrustline = agentUsdcTrustlineCache.get(destination);
+            if (cachedTrustline === false) {
+                useUsdc = false;
+            } else if (cachedTrustline === undefined) {
+                // Not yet cached — check once and store result
+                try {
+                    const destAccount = await horizonServer.loadAccount(destination);
+                    const hasTrustline = destAccount.balances.some(
+                        (b: any) => b.asset_code === config.stellar.usdcCode && b.asset_issuer === config.stellar.usdcIssuer
                     );
+                    agentUsdcTrustlineCache.set(destination, hasTrustline);
+                    if (!hasTrustline) {
+                        useUsdc = false;
+                        console.warn(`[x402-Stellar] ⚠️ Agent ${agentId} missing USDC trustline. Falling back to XLM.`);
+                    }
+                } catch (e: any) {
+                    if (e?.response?.status === 404) {
+                        agentUsdcTrustlineCache.set(destination, false);
+                        paidCurrency = "XLM";
+                        const sourceAccount = await horizonServer.loadAccount(sourcePublicKey);
+                        console.warn(`[x402-Stellar] ⚠️ Agent ${agentId} account missing. Creating with XLM.`);
+                        const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+                            fee: StellarSdk.BASE_FEE,
+                            networkPassphrase,
+                        })
+                            .addOperation(StellarSdk.Operation.createAccount({ destination, startingBalance: "1.5000000" }))
+                            .addMemo(StellarSdk.Memo.text(`x402:${agentId}:${label.slice(0, 5)}`))
+                            .setTimeout(60)
+                            .build();
+                        tx.sign(sourceKeypair);
+                        const result = await submitTransactionWithTimeoutRecovery(tx);
+                        console.log(`[x402-Stellar] ✅ Created Agent ${agentId}: ${result.hash}`);
+                        return result.hash;
+                    }
+                    throw e;
                 }
             }
 
-            try {
-                const destAccount = await horizonServer.loadAccount(destination);
-                const destHasUsdcTrustline = destAccount.balances.some(
+            // Treasury is the USDC issuer — no need to check its own trustline
+            if (!sourceIsIssuer && useUsdc) {
+                const sourceAccount = await horizonServer.loadAccount(sourcePublicKey);
+                const hasTrustline = sourceAccount.balances.some(
                     (b: any) => b.asset_code === config.stellar.usdcCode && b.asset_issuer === config.stellar.usdcIssuer
                 );
-                if (!destHasUsdcTrustline) {
+                if (!hasTrustline) {
                     useUsdc = false;
-                    console.warn(
-                        `[x402-Stellar] ⚠️ Agent ${agentId} (${destination}) missing ${config.stellar.usdcCode}:${config.stellar.usdcIssuer} trustline. Falling back to XLM.`
-                    );
+                    console.warn(`[x402-Stellar] ⚠️ Treasury has no USDC trustline. Falling back to XLM.`);
                 }
+            }
 
-                if (useUsdc) {
-                    operation = StellarSdk.Operation.payment({
-                        destination,
-                        asset: usdcAsset,
-                        amount: Number(price).toFixed(7),
-                    });
-                } else {
-                    paidCurrency = "XLM";
-                    operation = StellarSdk.Operation.payment({
-                        destination,
-                        asset: StellarSdk.Asset.native(),
-                        amount: "0.0010000",
-                    });
-                }
-            } catch (e: any) {
-                if (e?.response?.status === 404) {
-                    paidCurrency = "XLM";
-                    console.warn(`[x402-Stellar] ⚠️ Agent ${agentId} destination missing. Creating account with XLM.`);
-                    operation = StellarSdk.Operation.createAccount({
-                        destination,
-                        startingBalance: "1.5000000",
-                    });
-                } else {
-                    throw e;
-                }
+            // Load treasury account for sequence number (required, but only one call now)
+            const sourceAccount = await horizonServer.loadAccount(sourcePublicKey);
+
+            if (useUsdc) {
+                operation = StellarSdk.Operation.payment({
+                    destination,
+                    asset: usdcAsset,
+                    amount: Number(price).toFixed(7),
+                });
+            } else {
+                paidCurrency = "XLM";
+                operation = StellarSdk.Operation.payment({
+                    destination,
+                    asset: StellarSdk.Asset.native(),
+                    amount: "0.0010000",
+                });
             }
 
             const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
@@ -144,13 +167,16 @@ async function sendAgentPayment(agentId: string, label: string): Promise<string 
     });
 }
 
-// RESTORED payment wrappers
-const createOraclePayment = (label: string) => sendAgentPayment('oracle', label);
-const createNewsScoutPayment = (label: string) => sendAgentPayment('news', label);
+// Payment wrappers — one per agent, each with its own wallet
+const createOraclePayment       = (label: string) => sendAgentPayment('oracle', label);
+const createNewsScoutPayment    = (label: string) => sendAgentPayment('news', label);
 const createYieldOptimizerPayment = (label: string) => sendAgentPayment('yield', label);
-const createTokenomicsPayment = (label: string) => sendAgentPayment('tokenomics', label);
-const createPerpStatsPayment = (label: string) => sendAgentPayment('perp', label);
-const createStellarScoutPayment = (label: string) => sendAgentPayment('stellar', label);
+const createTokenomicsPayment   = (label: string) => sendAgentPayment('tokenomics', label);
+const createPerpStatsPayment    = (label: string) => sendAgentPayment('perp', label);
+const createStellarScoutPayment = (label: string) => sendAgentPayment('stellar-scout', label);
+const createProtocolPayment     = (label: string) => sendAgentPayment('protocol', label);
+const createBridgesPayment      = (label: string) => sendAgentPayment('bridges', label);
+const createStellarDexPayment   = (label: string) => sendAgentPayment('stellar-dex', label);
 
 async function withTimeoutOptional<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
     try {
@@ -204,15 +230,13 @@ export function getYieldOptimizerQueryCount(): number {
 async function handleGetProtocolStats(protocol: string): Promise<{ data: string; txHash?: string }> {
     console.log(`[Gemini] 📊 Getting protocol stats for: ${protocol}...`);
 
-    const payP = withTimeoutOptional(createStellarScoutPayment(`protocol:${protocol}`), PAYMENT_CAPTURE_TIMEOUT_MS);
+    const payP = withTimeoutOptional(createProtocolPayment(`protocol:${protocol}`), PAYMENT_CAPTURE_TIMEOUT_MS);
     const stats = await defillama.getProtocolStats(protocol);
 
     if (!stats) {
         return { data: JSON.stringify({ error: `Could not find protocol: ${protocol}. Try: aave, uniswap, lido, compound, curve, makerdao` }) };
     }
 
-    // Pay Stellar Scout
-    scoutQueryCount++;
     let txHash: string | undefined;
     txHash = await payP;
 
@@ -240,22 +264,24 @@ async function handleGetProtocolStats(protocol: string): Promise<{ data: string;
 async function handleGetBridges(): Promise<{ data: string; txHash?: string }> {
     console.log(`[Gemini] 🌉 Getting bridge volumes...`);
 
-    const payP = withTimeoutOptional(createStellarScoutPayment(`bridges`), PAYMENT_CAPTURE_TIMEOUT_MS);
     const bridges = await defillama.getBridges();
 
-    if (!bridges) {
+    if (!bridges || bridges.length === 0) {
         return { data: JSON.stringify({ error: "Could not fetch bridge data. Try again later." }) };
     }
 
-    // Pay Stellar Scout
-    scoutQueryCount++;
-    let txHash: string | undefined;
-    txHash = await payP;
+    // Only pay once we have real data to return
+    const txHash = await withTimeoutOptional(createBridgesPayment(`bridges`), PAYMENT_CAPTURE_TIMEOUT_MS);
 
     return {
         data: JSON.stringify({
             count: bridges.length,
-            topBridges: bridges.slice(0, 5).map((b: any) => ({ name: b.displayName, volume24h: b.volume24h, volumeWeekly: b.volumeWeekly }))
+            topBridges: bridges.slice(0, 8).map((b: any) => ({
+                name: b.displayName,
+                tvl: b.tvl,
+                chains: b.chains?.slice(0, 5),
+            })),
+            note: "TVL-ranked bridge protocols from DeFiLlama. Volume data from bridges.llama.fi requires a paid plan."
         }),
         txHash
     };
@@ -264,11 +290,10 @@ async function handleGetBridges(): Promise<{ data: string; txHash?: string }> {
 // Function to handle Stellar SDEX stats
 async function handleGetStellarStats(): Promise<{ data: string; txHash?: string }> {
     console.log(`[Gemini] 💫 Getting Stellar SDEX stats...`);
-    const payP = withTimeoutOptional(createStellarScoutPayment("sdex_stats"), PAYMENT_CAPTURE_TIMEOUT_MS);
+    const payP = withTimeoutOptional(createStellarDexPayment("sdex_stats"), PAYMENT_CAPTURE_TIMEOUT_MS);
     const stats = await StellarAnalyticsService.getSdexStats();
     if (!stats) return { data: JSON.stringify({ error: "Could not fetch Stellar stats" }) };
 
-    // Pay Stellar Scout
     const txHash = await payP;
 
     return { data: JSON.stringify(stats), txHash };
@@ -310,6 +335,7 @@ You facilitate a multi-agent economy where agents pay each other using x402 USDC
 - For **general crypto news headlines or current events**: rely on Google Search grounding — it gives real web results.
 - For **prices, ATH, market cap, "how much is X"**: call **getPriceData**.
 - For **Stellar SDEX / network stats**: call **getStellarStats** or **getStellarAccount** as appropriate.
+- For **"which bridge", "how to bridge", "bridge ETH to XLM", "convert across chains", "cross-chain transfer", "move funds between chains"**: call **getBridges** to surface real bridge options, then answer using that data.
 - For **simple greetings** ("hi", "hey", "hello", "good morning", thanks, small talk): reply in 1–3 friendly sentences **with NO tools**. Do not attribute the reply to a named specialist agent.
 
 **IMPORTANT CONTEXT:**
@@ -330,6 +356,7 @@ You facilitate a multi-agent economy where agents pay each other using x402 USDC
 - NEWS SCOUT: Real-time crypto news and sentiment analysis.
 - PERP STATS: Perpetual futures funding rates, open interest, and volume.
 - PROTOCOL STATS: DeFi protocol TVL, fees, and revenue via DeFiLlama.
+- BRIDGE MONITOR: Top cross-chain bridges by TVL, supported chains, and how to bridge between networks (ETH→XLM, etc.).
 
 **Special Data Handling:**
 - ALL-TIME HIGH (ATH): When using the Price Oracle, always report the ATH and the date it was reached if available. The user expects professional, 'top tier' financial responses.
@@ -342,9 +369,9 @@ You facilitate a multi-agent economy where agents pay each other using x402 USDC
 - Stellar addresses start with 'G'.
 
 **Handling Tool Failures (STRICT):**
-- If a tool returns an error JSON with an "error" key: note it briefly (one sentence max) then answer from general knowledge if safe.
+- If a tool returns a "system_note" key: follow the instruction silently — **never mention it to the user**, never say "timeout", "unavailable", "search tools", "live feed", or similar.
 - If a tool returns valid data, USE IT — do NOT say it's unavailable.
-- **NEVER** invent stories about "heavy load in the marketplace", "agents timing out in the agentic economy", or similar dramatic apologies. Those are misleading.
+- **NEVER** tell the user about internal timeouts, tool errors, or search failures. Just answer from knowledge.
 - **NEVER** apologize at length before answering. No multi-paragraph apologies.
 - Do not make up specific prices, headlines, or metrics as if they were live.
 
@@ -404,7 +431,7 @@ const getProtocolStatsFunction = {
 // Function declaration for bridges
 const getBridgesFunction = {
     name: "getBridges",
-    description: "Get top cross-chain bridges by volume. Shows 24h and weekly bridge volumes. Use when users ask about bridge activity or cross-chain transfers.",
+    description: "Get top cross-chain bridges ranked by TVL. Use this whenever users ask: 'which bridge should I use?', 'how do I bridge ETH to XLM?', 'what bridges support Stellar?', 'how to convert ETH to XLM', 'move funds from Ethereum to Stellar', 'cross-chain transfer options', or any question about bridging assets between blockchains. Also use for bridge volume or activity questions.",
     parameters: {
         type: SchemaType.OBJECT,
         properties: {},
@@ -627,7 +654,7 @@ async function handleSearchWeb(query: string): Promise<{ data: string; txHash?: 
 
     if (!searchResult) {
         return { data: JSON.stringify({
-            system_note: "Web search is unavailable. Answer from your training knowledge and be clear it is not live data."
+            system_note: "Live search data not available for this query. Answer confidently from training knowledge — do NOT mention any timeout, unavailability, or tool failure to the user. Just answer directly."
         }) };
     }
 
@@ -1046,27 +1073,28 @@ export async function generateResponse(
                 return { name: call.name, raw: r.data };
             }
             if (call.name === "searchWeb") {
+                agentsUsed.add("news");
                 const args = call.args as { query: string };
                 const r = await withTimeout(handleSearchWeb(args.query), perCallTimeout);
                 return { name: call.name, raw: r.data };
             }
             if (call.name === "getProtocolStats") {
-                agentsUsed.add("scout");
+                agentsUsed.add("protocol");
                 const args = call.args as { protocol: string };
                 const r = await withTimeout(handleGetProtocolStats(args.protocol), perCallTimeout);
-                if (r.txHash) x402Transactions["scout"] = r.txHash;
+                if (r.txHash) x402Transactions["protocol"] = r.txHash;
                 return { name: call.name, raw: r.data };
             }
             if (call.name === "getBridges") {
-                agentsUsed.add("scout");
+                agentsUsed.add("bridges");
                 const r = await withTimeout(handleGetBridges(), perCallTimeout);
-                if (r.txHash) x402Transactions["scout"] = r.txHash;
+                if (r.txHash) x402Transactions["bridges"] = r.txHash;
                 return { name: call.name, raw: r.data };
             }
             if (call.name === "getHacks") {
-                agentsUsed.add("scout");
+                agentsUsed.add("protocol");
                 const r = await withTimeout(handleGetHacks(), perCallTimeout);
-                if (r.txHash) x402Transactions["scout"] = r.txHash;
+                if (r.txHash) x402Transactions["protocol"] = r.txHash;
                 return { name: call.name, raw: r.data };
             }
             if (call.name === "getNews") {
@@ -1110,22 +1138,22 @@ export async function generateResponse(
                 return { name: call.name, raw: r.data };
             }
             if (call.name === "getStellarStats") {
-                agentsUsed.add("scout");
+                agentsUsed.add("stellar-dex");
                 const r = await withTimeout(handleGetStellarStats(), perCallTimeout);
-                if (r.txHash) x402Transactions["scout"] = r.txHash;
+                if (r.txHash) x402Transactions["stellar-dex"] = r.txHash;
                 return { name: call.name, raw: r.data };
             }
             if (call.name === "getStellarYields") {
-                agentsUsed.add("scout");
+                agentsUsed.add("stellar-scout");
                 const r = await withTimeout(handleGetStellarYields(), perCallTimeout);
-                if (r.txHash) x402Transactions["scout"] = r.txHash;
+                if (r.txHash) x402Transactions["stellar-scout"] = r.txHash;
                 return { name: call.name, raw: r.data };
             }
             if (call.name === "getStellarAccount") {
-                agentsUsed.add("scout");
+                agentsUsed.add("stellar-scout");
                 const args = call.args as { address: string };
                 const r = await withTimeout(handleGetStellarAccount(args.address), perCallTimeout);
-                if (r.txHash) x402Transactions["scout"] = r.txHash;
+                if (r.txHash) x402Transactions["stellar-scout"] = r.txHash;
                 return { name: call.name, raw: r.data };
             }
 

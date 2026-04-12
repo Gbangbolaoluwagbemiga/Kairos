@@ -367,42 +367,54 @@ export function formatProtocolStats(stats: ProtocolStats): string {
 const BRIDGES_BASE_URL = "https://bridges.llama.fi";
 
 export interface BridgeData {
-    id: number;
+    id: number | string;
     name: string;
     displayName: string;
     volume24h: number;
     volumeWeekly: number;
     volumeMonthly: number;
+    tvl?: number;
     chains: string[];
     destinationChain?: string;
 }
 
 /**
- * Get all bridges with volume data
+ * Get bridge volume data.
+ * bridges.llama.fi is paywalled — we fall back to the free DeFiLlama protocols
+ * endpoint and filter for known bridge protocols.
  */
 export async function getBridges(): Promise<BridgeData[] | null> {
     try {
-        const response = await fetch(`${BRIDGES_BASE_URL}/bridges?includeChains=true`);
+        // Free fallback: filter DeFiLlama protocols list for bridge-type protocols
+        const response = await fetch(`https://api.llama.fi/protocols`, {
+            headers: { 'Accept': 'application/json' },
+            signal: AbortSignal.timeout(8000),
+        });
 
         if (!response.ok) {
-            throw new Error(`Bridges API error: ${response.status}`);
+            throw new Error(`Protocols API error: ${response.status}`);
         }
 
-        const data = await response.json();
+        const data: any[] = await response.json();
 
-        return (data.bridges || [])
-            .map((bridge: any) => ({
-                id: bridge.id,
-                name: bridge.name,
-                displayName: bridge.displayName || bridge.name,
-                volume24h: bridge.lastDailyVolume || 0,
-                volumeWeekly: bridge.weeklyVolume || 0,
-                volumeMonthly: bridge.monthlyVolume || 0,
-                chains: bridge.chains || [],
-                destinationChain: bridge.destinationChain
+        // Filter for bridge protocols by category
+        const bridges = data
+            .filter((p: any) => p.category === 'Bridge' || p.category === 'Cross Chain')
+            .map((p: any) => ({
+                id: p.id || p.slug,
+                name: p.name,
+                displayName: p.name,
+                volume24h: p.change_1d ? Math.abs(p.tvl * (p.change_1d / 100)) : 0,
+                volumeWeekly: p.change_7d ? Math.abs(p.tvl * (p.change_7d / 100)) : 0,
+                volumeMonthly: p.change_1m ? Math.abs(p.tvl * (p.change_1m / 100)) : 0,
+                tvl: p.tvl || 0,
+                chains: p.chains || [],
+                destinationChain: undefined,
             }))
-            .sort((a: BridgeData, b: BridgeData) => b.volume24h - a.volume24h)
-            .slice(0, 15);
+            .sort((a: any, b: any) => b.tvl - a.tvl)
+            .slice(0, 10);
+
+        return bridges.length > 0 ? bridges : null;
 
     } catch (error) {
         console.error("[DeFiLlama] Error fetching bridges:", error);

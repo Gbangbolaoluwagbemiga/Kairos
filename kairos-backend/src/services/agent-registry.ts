@@ -20,12 +20,16 @@ export interface AgentMetadata {
 
 // Default Registry (Mocked if CID is missing)
 const MOCK_REGISTRY: Record<string, AgentMetadata> = {
-    oracle: { id: 1, owner: config.agentAddresses.oracle, name: "Price Oracle", serviceType: "price", price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
-    news: { id: 2, owner: config.agentAddresses.news, name: "News Scout", serviceType: "news", price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
-    yield: { id: 3, owner: config.agentAddresses.yield, name: "Yield Optimizer", serviceType: "yield", price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
-    tokenomics: { id: 4, owner: config.agentAddresses.tokenomics, name: "Tokenomics", serviceType: "tokenomics", price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
-    perp: { id: 5, owner: config.agentAddresses.perp, name: "Perp Stats", serviceType: "perp", price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
-    stellar: { id: 6, owner: config.agentAddresses.stellarScout, name: "Stellar Scout", serviceType: "stellar", price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
+    oracle:     { id: 1, owner: config.agentAddresses.oracle,     name: "Price Oracle",        serviceType: "price",     price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
+    news:       { id: 2, owner: config.agentAddresses.news,       name: "News Scout",           serviceType: "news",      price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
+    yield:      { id: 3, owner: config.agentAddresses.yield,      name: "Yield Optimizer",      serviceType: "yield",     price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
+    tokenomics: { id: 4, owner: config.agentAddresses.tokenomics, name: "Tokenomics Analyzer",  serviceType: "tokenomics",price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
+    perp:       { id: 5, owner: config.agentAddresses.perp,       name: "Perp Stats",           serviceType: "perp",      price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
+    stellar:        { id: 6, owner: config.agentAddresses.stellarScout, name: "Stellar Scout", serviceType: "stellar",     price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
+    "stellar-scout": { id: 6, owner: config.agentAddresses.stellarScout, name: "Stellar Scout", serviceType: "stellar",     price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
+    protocol:   { id: 7, owner: config.agentAddresses.protocol,   name: "Protocol Stats",       serviceType: "protocol",  price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
+    bridges:    { id: 8, owner: config.agentAddresses.bridges,    name: "Bridge Monitor",       serviceType: "bridges",   price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
+    "stellar-dex": { id: 9, owner: config.agentAddresses.stellarDex, name: "Stellar DEX",      serviceType: "stellar-dex",price: "0.01", reputation: 100, tasksCompleted: 0, active: true },
 };
 
 export class AgentRegistryService {
@@ -37,6 +41,9 @@ export class AgentRegistryService {
         tokenomics: "tokenomics",
         perp: "perp",
         stellar: "stellar",
+        protocol: "protocol",
+        bridges: "bridges",
+        "stellar-dex": "stellar-dex",
     };
 
     private static async simulateReadonly(method: string, args: unknown[] = []): Promise<unknown> {

@@ -439,10 +439,12 @@ export default function Providers() {
 
                     {/* Stats */}
                     <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                      <span className="flex items-center gap-1">
-                        <Star className="w-3 h-3" style={{ color: provider.rating > 0 ? '#fbbf24' : undefined }} />
-                        <span className="text-foreground font-medium">{provider.rating || '—'}</span>
-                        {provider.reviews > 0 && <span className="text-muted-foreground/50">({provider.reviews})</span>}
+                      <span className="flex items-center gap-1" title={provider.reviews > 0 ? `${provider.reviews} ratings from chat thumbs up/down` : 'No ratings yet — rate responses in chat'}>
+                        <Star className="w-3 h-3" style={{ color: provider.rating > 0 ? '#fbbf24' : undefined, fill: provider.rating > 0 ? '#fbbf24' : 'none' }} />
+                        {provider.rating > 0
+                          ? <><span className="text-foreground font-medium">{provider.rating.toFixed(1)}</span><span className="text-muted-foreground/50">({provider.reviews})</span></>
+                          : <span className="text-muted-foreground/40 text-[10px]">No ratings yet</span>
+                        }
                       </span>
                       <span className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />

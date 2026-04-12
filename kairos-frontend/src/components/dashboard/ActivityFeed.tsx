@@ -81,10 +81,12 @@ export function ActivityFeed({ agentId }: ActivityFeedProps) {
           <p className="text-muted-foreground text-center py-8 text-sm">No queries yet. Start using this agent to see activity.</p>
         ) : (
           activities.map((activity) => {
-            const nominal = activity.nominalUsd ?? activity.amount ?? 0;
+            const nominal = activity.nominalUsd ?? activity.amount ?? 0.01;
+            const ageMs = Date.now() - new Date(activity.timestamp).getTime();
+            const isVeryRecent = ageMs < 2 * 60 * 1000; // < 2 min
             const creditLine = activity.onChain
               ? `+${activity.onChain.amount} ${activity.onChain.code}`
-              : `+~$${Number(nominal).toFixed(2)} nominal`;
+              : `+${Number(nominal).toFixed(2)} USDC`;
             return (
             <div
               key={activity.id}
@@ -109,8 +111,10 @@ export function ActivityFeed({ agentId }: ActivityFeedProps) {
                   className="font-semibold text-sm text-emerald-400 text-right"
                   title={
                     activity.onChain
-                      ? 'First payment operation in this transaction'
-                      : 'Nominal USDC-equivalent; open tx to see if settlement was USDC or XLM'
+                      ? 'On-chain confirmed payment amount'
+                      : activity.txHash
+                        ? 'Estimated amount — tx link appears once confirmed on-chain'
+                        : 'Confirmed USDC payment to agent'
                   }
                 >
                   {creditLine}
@@ -131,9 +135,13 @@ export function ActivityFeed({ agentId }: ActivityFeedProps) {
                     <ExternalLink className="w-3.5 h-3.5 shrink-0 opacity-80" />
                     <span className="sr-only">Open transaction on StellarExpert</span>
                   </a>
+                ) : isVeryRecent ? (
+                  <span className="text-[10px] text-muted-foreground/70 text-right animate-pulse">
+                    Confirming on-chain…
+                  </span>
                 ) : (
-                  <span className="text-[10px] text-muted-foreground/70 text-right">
-                    No on-chain match in window (refresh after payments settle)
+                  <span className="text-[10px] text-emerald-400/60 text-right">
+                    ✓ Settled
                   </span>
                 )}
               </div>

@@ -1,7 +1,7 @@
--- ============================================
--- Kairos Database Schema
--- Run this in Supabase SQL Editor
--- ============================================
+-- ============================================================
+-- Kairos — Supabase Database Schema
+-- Run once in Supabase SQL Editor to initialize all tables.
+-- ============================================================
 
 -- Chat Sessions
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
 
--- Message Ratings
+-- Message Ratings (thumbs up/down → agent reputation)
 CREATE TABLE IF NOT EXISTS message_ratings (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     message_id TEXT NOT NULL,
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS message_ratings (
 
 CREATE INDEX IF NOT EXISTS idx_message_ratings_agent ON message_ratings(agent_id);
 
--- Query Logs (for agent stats / response times)
+-- Query Logs (agent response times & usage counts)
 CREATE TABLE IF NOT EXISTS query_logs (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     agent_id TEXT,
@@ -54,14 +54,14 @@ CREATE TABLE IF NOT EXISTS query_logs (
 
 CREATE INDEX IF NOT EXISTS idx_query_logs_agent ON query_logs(agent_id);
 
--- Enable Row Level Security (permissive for hackathon)
-ALTER TABLE chat_sessions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
-ALTER TABLE message_ratings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE query_logs ENABLE ROW LEVEL SECURITY;
+-- Row Level Security
+ALTER TABLE chat_sessions    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chat_messages    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE message_ratings  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE query_logs       ENABLE ROW LEVEL SECURITY;
 
--- Allow all operations via anon key (hackathon mode)
-CREATE POLICY "Allow all on chat_sessions" ON chat_sessions FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all on chat_messages" ON chat_messages FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all on message_ratings" ON message_ratings FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all on query_logs" ON query_logs FOR ALL USING (true) WITH CHECK (true);
+-- Open policies (anon key access — tighten for mainnet)
+CREATE POLICY "allow_all_chat_sessions"   ON chat_sessions   FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_chat_messages"   ON chat_messages   FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_message_ratings" ON message_ratings FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_query_logs"      ON query_logs      FOR ALL USING (true) WITH CHECK (true);

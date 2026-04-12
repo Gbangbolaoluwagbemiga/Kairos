@@ -65,14 +65,26 @@ export function ChatMessage({ id, content, isUser, timestamp, imagePreview, agen
     if (!address || rating !== null || isRating) return;
     setIsRating(true);
     try {
-      const agentId = agentsUsed?.[0] ?? undefined;
+      // Rate the primary agent (first used), and also send ratings for any additional agents
+      const agents = agentsUsed && agentsUsed.length > 0 ? agentsUsed : [undefined];
+      const primaryAgent = agents[0];
       const res = await fetch(`${API_BASE_URL}/ratings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messageId: id, wallet: address, isPositive, agentId }),
+        body: JSON.stringify({ messageId: id, wallet: address, isPositive, agentId: primaryAgent }),
       });
       const d = await res.json();
-      if (d.success) setRating(isPositive);
+      if (d.success) {
+        setRating(isPositive);
+        // Also rate additional agents (fire-and-forget, different messageId suffix)
+        for (let i = 1; i < agents.length; i++) {
+          fetch(`${API_BASE_URL}/ratings`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messageId: `${id}-${i}`, wallet: address, isPositive, agentId: agents[i] }),
+          }).catch(() => {});
+        }
+      }
     } catch (e) { console.error('Rate error:', e); }
     finally { setIsRating(false); }
   };

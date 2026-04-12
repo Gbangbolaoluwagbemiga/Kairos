@@ -5,16 +5,12 @@
 # Dependencies
 node_modules/
 
-# Local secrets (never commit)
-agent_keys.txt
-kairos-backend/agent-wallets.json
-
-# Environment Variables
+# Local Secrets — NEVER commit
 .env
 .env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*.local
+agent_keys.txt
+kairos-backend/agent-wallets.json
 
 # Build Outputs
 dist/
@@ -23,23 +19,19 @@ build/
 broadcast/
 cache/
 
-# Debug Logs
+# Logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+build_output.txt
 
 # IDEs
 .vscode/
 .idea/
 
-# Foundry
+# Rust / Foundry (contracts — not used in production)
+target/
+Cargo.lock
 /lib/
 !lib/forge-std
 !lib/openzeppelin-contracts
-
-# Rust
-target/
-
-# Logs
-build_output.txtagent-wallets.json
-kairos-backend/agent-wallets.json
