@@ -361,6 +361,282 @@ export function initGemini(apiKey: string) {
 
 // Timeout for Groq API calls
 const GROQ_TIMEOUT_MS = Number(process.env.GROQ_TIMEOUT_MS || 60000);
+const FAST_MODE = (process.env.KAIROS_FAST_MODE || "1").trim() !== "0";
+// Groq tool-calling has proven unreliable (sometimes emits <function=...> tags → HTTP 400 tool_use_failed).
+// Default: OFF. We do deterministic tool routing instead.
+const GROQ_TOOL_CALLING = (process.env.KAIROS_GROQ_TOOL_CALLING || "0").trim() === "1";
+
+function stripInlineRagCitations(text: string): string {
+    if (!text) return text;
+    // Remove inline citations like [Source 1], [source1], [SOURCE 12]
+    const cleaned = text
+        .replace(/\s*\[\s*source\s*\d+\s*\]/gi, "")
+        .replace(/\s*\[\s*source\d+\s*\]/gi, "")
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    return cleaned;
+}
+
+function renderFastFromTools(last: Record<string, any>): string | null {
+    const sections: string[] = [];
+
+    const has = (k: string) => last[k] && !last[k].error;
+
+    if (has("getPriceData")) {
+        const d = last.getPriceData as any;
+        const sym = (d.symbol || "").toUpperCase();
+        const name = d.name || sym || "Token";
+        const price = d.price != null ? `$${Number(d.price).toLocaleString(undefined, { maximumFractionDigits: 6 })}` : "N/A";
+        const change = d.change24h != null ? `${Number(d.change24h).toFixed(2)}%` : "N/A";
+        const athNum = d.ath != null ? Number(d.ath) : NaN;
+        const ath = Number.isFinite(athNum) ? `$${athNum.toLocaleString(undefined, { maximumFractionDigits: 6 })}` : "N/A";
+        const athDate = d.athDate ? new Date(d.athDate).toLocaleDateString() : "N/A";
+        const drawdown =
+            Number.isFinite(athNum) && Number.isFinite(Number(d.price)) && athNum > 0
+                ? `${(((Number(d.price) - athNum) / athNum) * 100).toFixed(1)}%`
+                : null;
+        sections.push(
+            `The current price of **${name} (${sym})** is **${price}**.\n\n` +
+                `- 24h change: ${change}\n` +
+                `- Market cap: ${d.marketCap != null ? `$${Number(d.marketCap).toLocaleString()}` : "N/A"}\n` +
+                `- Volume (24h): ${d.volume24h != null ? `$${Number(d.volume24h).toLocaleString()}` : "N/A"}\n` +
+                `- ATH: ${ath} (reached ${athDate})` +
+                (drawdown ? `\n- vs ATH: ${drawdown}` : "")
+        );
+    }
+
+    if (has("getNews") && (last.getNews?.articles?.length || last.getNews?.result?.articles?.length)) {
+        const articles = (last.getNews.articles || last.getNews.result?.articles || []).slice(0, 8);
+        const lines = articles.map((a: any, i: number) => `${i + 1}. ${a.title}${a.source ? ` — ${a.source}` : ""}`);
+        sections.push(`**Latest headlines**\n${lines.join("\n")}`);
+    }
+
+    if (has("getBridges")) {
+        const d = last.getBridges as any;
+        const bridges =
+            Array.isArray(d?.topBridges) ? d.topBridges :
+            Array.isArray(d?.bridges) ? d.bridges :
+            Array.isArray(d?.result?.topBridges) ? d.result.topBridges :
+            Array.isArray(d?.result?.bridges) ? d.result.bridges :
+            [];
+        if (bridges.length) {
+            const lines = bridges.slice(0, 8).map((b: any, i: number) => {
+                const name = b.name || b.displayName || b.bridge || b.protocol || "Bridge";
+                const tvl = b.tvl != null ? `$${Number(b.tvl).toLocaleString()}` : undefined;
+                return `${i + 1}. ${name}${tvl ? ` (TVL ${tvl})` : ""}`;
+            });
+            sections.push(`**Top bridges**\n${lines.join("\n")}`);
+            sections.push(
+                `\n**How to use this**\n- Bridge ETH to a supported chain, then on-ramp to Stellar via an anchor/exchange if direct Stellar support isn’t listed.\n- Always verify fees + supported assets on the bridge UI before sending large amounts.`
+            );
+        }
+    }
+
+    if (has("getYields")) {
+        const d = last.getYields as any;
+        const rows =
+            (d?.opportunities ||
+                d?.result?.opportunities ||
+                d?.yields ||
+                d?.result?.yields ||
+                []).slice(0, 8);
+        if (rows.length) {
+            const lines = rows.map((y: any, i: number) =>
+                `${i + 1}. ${y.protocol || "Protocol"}${y.name ? ` (${y.name})` : ""} — ${y.apy != null ? `${Number(y.apy).toFixed(2)}% APY` : "APY N/A"}${y.chain ? ` · ${y.chain}` : ""}${y.asset ? ` · ${y.asset}` : ""}`
+            );
+            sections.push(`**Top yields**\n${lines.join("\n")}`);
+            sections.push(
+                `\nIf you want, tell me your constraints (chain, minimum TVL, risk level), and I’ll narrow this to a safe shortlist.`
+            );
+        }
+    }
+
+    if (has("getStellarYields")) {
+        const d = last.getStellarYields as any;
+        const rows = (
+            Array.isArray(d) ? d :
+            d?.yields ||
+            d?.result?.yields ||
+            []
+        ).slice(0, 6);
+        if (rows.length) {
+            const lines = rows.map((y: any, i: number) => {
+                const apy =
+                    y.apy == null ? "APY N/A" :
+                    typeof y.apy === "string" ? y.apy :
+                    `${Number(y.apy).toFixed(2)}%`;
+                const tvl = y.tvl ? ` · TVL ${y.tvl}` : "";
+                return `${i + 1}. ${y.protocol || "Protocol"} — ${apy}${y.asset ? ` · ${y.asset}` : ""}${tvl}`;
+            });
+            sections.push(`**Stellar yields**\n${lines.join("\n")}`);
+            sections.push(`\nWant this filtered (stable-only vs higher risk, or USDC-only)? Tell me and I’ll narrow it down.`);
+        }
+    }
+
+    if (has("getStellarStats")) {
+        const d = last.getStellarStats as any;
+        const pairs = (d?.topPairs || d?.result?.topPairs || []).slice(0, 5);
+        if (pairs.length) {
+            const volText = (v: any) => {
+                if (v == null) return "Vol N/A";
+                if (typeof v === "string") return v;
+                const n = Number(v);
+                return Number.isFinite(n) ? `$${n.toLocaleString()}` : "Vol N/A";
+            };
+            const lines = pairs.map((p: any, i: number) =>
+                `${i + 1}. ${p.pair || p.name || "Pair"} — ${volText(p.volume24h)} (24h)${p.price ? ` · price ${p.price}` : ""}`
+            );
+            sections.push(`**Top SDEX pairs (24h)**\n${lines.join("\n")}`);
+            sections.push(`\nIf you want, tell me the asset you care about (XLM/USDC/etc.) and I’ll highlight the best pair + what the volume implies.`);
+        }
+    }
+
+    if (has("getStellarAccount")) {
+        const d = last.getStellarAccount as any;
+        const balances = (d?.balances || d?.result?.balances || []).slice(0, 8);
+        const lines = balances.map((b: any, i: number) => {
+            const asset = b.asset || "XLM";
+            const bal = b.balance != null ? String(b.balance) : "N/A";
+            return `${i + 1}. ${asset}: ${bal}`;
+        });
+        sections.push(`**Stellar account**\n${lines.join("\n") || "Account details available."}`);
+    }
+
+    if (has("getProtocolStats")) {
+        const d = last.getProtocolStats as any;
+        const name = d?.name || d?.result?.name || "Protocol";
+        const tvl = d?.tvl ?? d?.result?.tvl;
+        const fees24h = d?.fees24h ?? d?.result?.fees24h;
+        const rev24h = d?.revenue24h ?? d?.result?.revenue24h;
+        sections.push(
+            `**Protocol stats — ${name}**\n- TVL: ${tvl != null ? `$${Number(tvl).toLocaleString()}` : "N/A"}\n- Fees (24h): ${fees24h != null ? `$${Number(fees24h).toLocaleString()}` : "N/A"}\n- Revenue (24h): ${rev24h != null ? `$${Number(rev24h).toLocaleString()}` : "N/A"}`
+        );
+    }
+
+    if (has("getTokenomics")) {
+        const d = last.getTokenomics as any;
+        const sym = (d?.symbol || d?.result?.symbol || "").toUpperCase();
+        const supply = d?.circulatingSupply ?? d?.result?.circulatingSupply;
+        const fdv = d?.fdv ?? d?.result?.fdv;
+        sections.push(
+            `**Tokenomics ${sym || ""}**\n- Circulating supply: ${supply != null ? Number(supply).toLocaleString() : "N/A"}\n- FDV: ${fdv != null ? `$${Number(fdv).toLocaleString()}` : "N/A"}`
+        );
+    }
+
+    if (has("getGlobalPerpStats")) {
+        const d = last.getGlobalPerpStats as any;
+        const oi = d?.totalOpenInterest ?? d?.result?.totalOpenInterest;
+        const vol = d?.totalVolume24h ?? d?.result?.totalVolume24h;
+        sections.push(
+            `**Perps (global)**\n- Open interest: ${oi != null ? `$${Number(oi).toLocaleString()}` : "N/A"}\n- Volume (24h): ${vol != null ? `$${Number(vol).toLocaleString()}` : "N/A"}`
+        );
+    }
+
+    if (has("getPerpMarkets")) {
+        const d = last.getPerpMarkets as any;
+        const markets = (d?.markets || d?.result?.markets || []).slice(0, 6);
+        if (markets.length) {
+            const lines = markets.map((m: any, i: number) => `${i + 1}. ${m.symbol || m.market || "MARKET"} — funding ${m.fundingRate ?? "N/A"} · OI ${m.openInterest ?? "N/A"}`);
+            sections.push(`**Perp markets**\n${lines.join("\n")}`);
+        }
+    }
+
+    if (has("getHacks")) {
+        const d = last.getHacks as any;
+        const hacks = (d?.recentHacks || d?.result?.recentHacks || []).slice(0, 6);
+        if (hacks.length) {
+            const lines = hacks.map((h: any, i: number) => `${i + 1}. ${h.name || "Incident"} — ${h.amount || "N/A"} (${h.date || "date N/A"})`);
+            sections.push(`**Recent exploits**\n${lines.join("\n")}`);
+        }
+    }
+
+    if (has("getTrending")) {
+        const d = last.getTrending as any;
+        const topics = (d?.topics || d?.result?.topics || d?.trending || []).slice(0, 8);
+        if (topics.length) {
+            const lines = topics.map((t: any, i: number) => `${i + 1}. ${t.topic || t.title || t}`);
+            sections.push(`**Trending topics**\n${lines.join("\n")}`);
+        }
+    }
+
+    if (sections.length === 0) return null;
+    return stripInlineRagCitations(sections.join("\n\n"));
+}
+
+function fastRouteTools(prompt: string): Array<{ name: string; args: any }> {
+    const q = (prompt || "").trim();
+    const s = q.toLowerCase();
+    const tools: Array<{ name: string; args: any }> = [];
+
+    const add = (name: string, args: any) => {
+        if (!tools.some((t) => t.name === name)) tools.push({ name, args });
+    };
+
+    // Bridges / cross-chain
+    if (/\bbridge(s|ing)?\b|\bcross[-\s]?chain\b|\bmove\s+assets?\b|\beth\s+to\s+stellar\b|\beth\s+to\s+xlm\b/.test(s)) {
+        add("getBridges", {});
+    }
+
+    // Price / ATH
+    const parenSym = (q.match(/\(([A-Za-z0-9]{2,10})\)/)?.[1] || "").trim();
+    const priceMatch = s.match(
+        /\bprice\b.*\bof\b\s+([a-z0-9]{2,10})\b|\bhow\s+much\s+is\b\s+([a-z0-9]{2,10})\b|\bcurrent\s+price\b.*\b([a-z0-9]{2,10})\b|\bath\b.*\b([a-z0-9]{2,10})\b|\ball[-\s]?time\s+high\b.*\b([a-z0-9]{2,10})\b/
+    );
+    const sym = (parenSym || priceMatch?.[1] || priceMatch?.[2] || priceMatch?.[3] || priceMatch?.[4] || priceMatch?.[5] || "").trim();
+    if (sym) add("getPriceData", { symbol: sym });
+
+    // News
+    if (/\b(latest|breaking|news|headlines)\b/.test(s)) {
+        add("getNews", { category: /\bbreaking\b/.test(s) ? "breaking" : /\bdefi\b/.test(s) ? "defi" : /\bbitcoin\b|\bbtc\b/.test(s) ? "bitcoin" : "all" });
+    }
+
+    const wantsYields = /\byield(s)?\b|\bapy\b|\bearn\b.*\b(usdc|xlm|stellar)\b|\blend\b|\baquarius\b/.test(s);
+    const wantsSdex = /\bsdex\b|\bstellar\s+dex\b|\btrading\s+pairs\b|\btop\s+pairs\b|\bvolume\b/.test(s) && /\bstellar\b|\bxlm\b|\bsdex\b/.test(s);
+
+    if (wantsYields) {
+        // If explicitly Stellar-focused, use Stellar yields
+        if (/\bstellar\b|\bxlm\b|\bblend\b|\baquarius\b/.test(s)) {
+            add("getStellarYields", {});
+        } else {
+            // Parse asset hint if provided (e.g. USDC)
+            const m = s.match(/\b(usdc|usdt|dai|eth|btc|sol|xlm)\b/);
+            add("getYields", m ? { asset: m[1].toUpperCase() } : {});
+        }
+    }
+    if (wantsSdex) {
+        add("getStellarStats", {});
+    }
+
+    // Protocol stats
+    if (/\btvl\b|\bfees\b|\brevenue\b|\bprotocol\b/.test(s)) {
+        const m = s.match(/\b(aave|uniswap|lido|compound|curve|maker|makerdao)\b/);
+        if (m?.[1]) add("getProtocolStats", { protocol: m[1] });
+    }
+
+    // Perps
+    if (/\bperp(s)?\b|\bfunding\b|\bopen\s+interest\b|\boi\b/.test(s)) {
+        add("getGlobalPerpStats", {});
+    }
+
+    // Tokenomics
+    if (/\btokenomics\b|\bunlock\b|\bemission\b|\bsupply\b|\bfdv\b/.test(s)) {
+        const m = s.match(/\b([a-z0-9]{2,10})\b/);
+        if (m?.[1]) add("getTokenomics", { symbol: m[1].toUpperCase() });
+    }
+
+    // Hacks
+    if (/\bhack(s)?\b|\bexploit(s)?\b|\bsecurity\b|\bbreach\b/.test(s)) {
+        add("getHacks", {});
+    }
+
+    // Trending
+    if (/\btrending\b|\bwhat'?s\s+hot\b/.test(s)) {
+        add("getTrending", {});
+    }
+
+    return tools;
+}
 
 export function getOracleQueryCount(): number {
     return oracleQueryCount;
@@ -380,18 +656,21 @@ export function getYieldOptimizerQueryCount(): number {
 
 
 // Function to handle protocol stats queries
-async function handleGetProtocolStats(protocol: string): Promise<{ data: string; txHash?: string }> {
+async function handleGetProtocolStats(
+    protocol: string,
+    receiptSink?: (agentId: string, txHash: string) => void
+): Promise<{ data: string; txHash?: string }> {
     console.log(`[Gemini] 📊 Getting protocol stats for: ${protocol}...`);
 
-    const payP = withTimeoutOptional(createProtocolPayment(`protocol:${protocol}`), PAYMENT_CAPTURE_TIMEOUT_MS);
+    const payP = createProtocolPayment(`protocol:${protocol}`);
+    void payP.then((h) => { if (h) receiptSink?.("protocol", h); }).catch(() => {});
     const stats = await defillama.getProtocolStats(protocol);
 
     if (!stats) {
         return { data: JSON.stringify({ error: `Could not find protocol: ${protocol}. Try: aave, uniswap, lido, compound, curve, makerdao` }) };
     }
 
-    let txHash: string | undefined;
-    txHash = await payP;
+    const txHash = await withTimeoutOptional(payP, 200);
 
     return {
         data: JSON.stringify({
@@ -414,7 +693,7 @@ async function handleGetProtocolStats(protocol: string): Promise<{ data: string;
 }
 
 // Function to handle bridges queries
-async function handleGetBridges(): Promise<{ data: string; txHash?: string }> {
+async function handleGetBridges(receiptSink?: (agentId: string, txHash: string) => void): Promise<{ data: string; txHash?: string }> {
     console.log(`[Gemini] 🌉 Getting bridge volumes...`);
 
     const bridges = await defillama.getBridges();
@@ -424,7 +703,9 @@ async function handleGetBridges(): Promise<{ data: string; txHash?: string }> {
     }
 
     // Only pay once we have real data to return
-    const txHash = await withTimeoutOptional(createBridgesPayment(`bridges`), PAYMENT_CAPTURE_TIMEOUT_MS);
+    const payP = createBridgesPayment(`bridges`);
+    void payP.then((h) => { if (h) receiptSink?.("bridges", h); }).catch(() => {});
+    const txHash = await withTimeoutOptional(payP, 200);
 
     return {
         data: JSON.stringify({
@@ -441,26 +722,27 @@ async function handleGetBridges(): Promise<{ data: string; txHash?: string }> {
 }
 
 // Function to handle Stellar SDEX stats
-async function handleGetStellarStats(): Promise<{ data: string; txHash?: string }> {
+async function handleGetStellarStats(receiptSink?: (agentId: string, txHash: string) => void): Promise<{ data: string; txHash?: string }> {
     console.log(`[Gemini] 💫 Getting Stellar SDEX stats...`);
-    const payP = withTimeoutOptional(createStellarDexPayment("sdex_stats"), PAYMENT_CAPTURE_TIMEOUT_MS);
+    const payP = createStellarDexPayment("sdex_stats");
+    void payP.then((h) => { if (h) receiptSink?.("stellar-dex", h); }).catch(() => {});
     const stats = await StellarAnalyticsService.getSdexStats();
     if (!stats) return { data: JSON.stringify({ error: "Could not fetch Stellar stats" }) };
 
-    const txHash = await payP;
+    const txHash = await withTimeoutOptional(payP, 200);
 
     return { data: JSON.stringify(stats), txHash };
 }
 
 // Function to handle Stellar yields
-async function handleGetStellarYields(): Promise<{ data: string; txHash?: string }> {
+async function handleGetStellarYields(receiptSink?: (agentId: string, txHash: string) => void): Promise<{ data: string; txHash?: string }> {
     console.log(`[Gemini] 🌾 Getting Stellar DeFi yields...`);
-    const payP = withTimeoutOptional(createStellarScoutPayment("yields"), PAYMENT_CAPTURE_TIMEOUT_MS);
+    const payP = createStellarScoutPayment("yields");
+    void payP.then((h) => { if (h) receiptSink?.("stellar-scout", h); }).catch(() => {});
     const yields = await StellarAnalyticsService.getStellarYields();
     if (!yields) return { data: JSON.stringify({ error: "Could not fetch Stellar yields" }) };
 
-    // Pay Stellar Scout
-    const txHash = await payP;
+    const txHash = await withTimeoutOptional(payP, 200);
 
     return { data: JSON.stringify(yields), txHash };
 }
@@ -478,7 +760,27 @@ async function handleGetStellarAccount(address: string): Promise<{ data: string;
     return { data: JSON.stringify(details), txHash };
 }
 
-const SYSTEM_PROMPT = `You are Kairos, the premier AI agentic marketplace for the Stellar ecosystem. 
+const SYSTEM_PROMPT_COMPACT = `You are Kairos (crypto + Stellar assistant). Choose the right tools, then answer concisely using tool results.
+
+Tool routing:
+- Prices/ATH/market cap: getPriceData
+- Headlines: getNews
+- DeFi yields: getYields or getStellarYields
+- Stellar stats: getStellarStats; Stellar account (G...): getStellarAccount
+- Bridges/cross-chain: getBridges
+- Protocol TVL/fees: getProtocolStats
+- Perps: getGlobalPerpStats / getPerpMarkets
+- Tokenomics: getTokenomics
+- Hacks: getHacks
+- Trending: getTrending
+- Greetings: no tools
+
+Rules:
+- Never mention payments/x402/USDC transfers.
+- Keep answers moderate length: ~6–12 lines, structured bullets + 1 short paragraph if useful.
+- If tools error, answer generally without mentioning errors.`;
+
+const SYSTEM_PROMPT_VERBOSE = `You are Kairos, the premier AI agentic marketplace for the Stellar ecosystem. 
 You facilitate a multi-agent economy where agents pay each other using x402 USDC micropayments.
 
 **ROUTING (CRITICAL):**
@@ -531,6 +833,12 @@ You facilitate a multi-agent economy where agents pay each other using x402 USDC
 - Use emojis to make responses visually appealing.
 - Be concise but thorough. Users pay for every query.
 - Always provide accurate, up-to-date information. Cite sources when relevant.`;
+
+// Default back to full/verbose responses unless explicitly set to compact.
+const SYSTEM_PROMPT =
+    (process.env.KAIROS_PROMPT || "verbose").toLowerCase().startsWith("c")
+        ? SYSTEM_PROMPT_COMPACT
+        : SYSTEM_PROMPT_VERBOSE;
 
 // Function declaration for price oracle
 const getPriceDataFunction = {
@@ -959,7 +1267,10 @@ async function handleGetTrending(): Promise<{ data: string; txHash?: string }> {
 }
 
 // Function to handle yield queries
-async function handleGetYields(options?: { chain?: string; type?: string; minApy?: number; maxApy?: number; asset?: string; protocol?: string; page?: number }): Promise<{ data: string; txHash?: string }> {
+async function handleGetYields(
+    options?: { chain?: string; type?: string; minApy?: number; maxApy?: number; asset?: string; protocol?: string; page?: number },
+    receiptSink?: (agentId: string, txHash: string) => void
+): Promise<{ data: string; txHash?: string }> {
     console.log(`[Gemini] 🌾 Getting DeFi yields...`, options);
 
     try {
@@ -990,7 +1301,9 @@ async function handleGetYields(options?: { chain?: string; type?: string; minApy
         let txHash: string | undefined;
         if (page === 1) {
             yieldOptimizerQueryCount++;
-            txHash = await withTimeoutOptional(createYieldOptimizerPayment(`yields:${options?.chain || options?.asset || 'top'}`), PAYMENT_CAPTURE_TIMEOUT_MS);
+            const payP = createYieldOptimizerPayment(`yields:${options?.chain || options?.asset || 'top'}`);
+            void payP.then((h) => { if (h) receiptSink?.("yield", h); }).catch(() => {});
+            txHash = await withTimeoutOptional(payP, 200);
         }
 
         // Calculate pagination
@@ -1345,13 +1658,13 @@ export async function generateResponse(
             if (call.name === "getProtocolStats") {
                 agentsUsed.add("protocol");
                 const args = call.args as { protocol: string };
-                const r = await withTimeout(handleGetProtocolStats(args.protocol), perCallTimeout);
+                const r = await withTimeout(handleGetProtocolStats(args.protocol, receiptSink), perCallTimeout);
                 if (r.txHash) x402Transactions["protocol"] = r.txHash;
                 return { name: call.name, raw: r.data };
             }
             if (call.name === "getBridges") {
                 agentsUsed.add("bridges");
-                const r = await withTimeout(handleGetBridges(), perCallTimeout);
+                const r = await withTimeout(handleGetBridges(receiptSink), perCallTimeout);
                 if (r.txHash) x402Transactions["bridges"] = r.txHash;
                 return { name: call.name, raw: r.data };
             }
@@ -1377,7 +1690,7 @@ export async function generateResponse(
             if (call.name === "getYields") {
                 agentsUsed.add("yield");
                 const args = call.args as { chain?: string; type?: string; minApy?: number; maxApy?: number; asset?: string; protocol?: string; page?: number };
-                const r = await withTimeout(handleGetYields(args), perCallTimeout);
+                const r = await withTimeout(handleGetYields(args, receiptSink), perCallTimeout);
                 if (r.txHash) x402Transactions["yield"] = r.txHash;
                 return { name: call.name, raw: r.data };
             }
@@ -1403,13 +1716,13 @@ export async function generateResponse(
             }
             if (call.name === "getStellarStats") {
                 agentsUsed.add("stellar-dex");
-                const r = await withTimeout(handleGetStellarStats(), perCallTimeout);
+                const r = await withTimeout(handleGetStellarStats(receiptSink), perCallTimeout);
                 if (r.txHash) x402Transactions["stellar-dex"] = r.txHash;
                 return { name: call.name, raw: r.data };
             }
             if (call.name === "getStellarYields") {
                 agentsUsed.add("stellar-scout");
-                const r = await withTimeout(handleGetStellarYields(), perCallTimeout);
+                const r = await withTimeout(handleGetStellarYields(receiptSink), perCallTimeout);
                 if (r.txHash) x402Transactions["stellar-scout"] = r.txHash;
                 return { name: call.name, raw: r.data };
             }
@@ -1443,6 +1756,47 @@ export async function generateResponse(
                 partial: true,
                 ragSources,
             };
+        }
+
+        // Fast mode: bypass Groq entirely for common, tool-first queries.
+        if (FAST_MODE) {
+            const routed = fastRouteTools(prompt || "");
+            if (routed.length) {
+                const lastToolResultsByName: Record<string, any> = {};
+                await Promise.all(
+                    routed.map(async (c) => {
+                        const r = await executeToolCall(c);
+                        lastToolResultsByName[r.name] = wrapToolResult(r.raw);
+                    })
+                );
+
+                // Preserve the on-chain "A2A flow" demo in fast mode when multiple agents were used.
+                const usedAgents = Array.from(agentsUsed);
+                if (usedAgents.length >= 2) {
+                    const primaryAgent = pickPrimaryAgent(usedAgents);
+                    const subAgents = usedAgents.filter((a) => a !== primaryAgent);
+                    console.log(`[A2A] 🤝 ${primaryAgent} coordinating with: ${subAgents.join(", ")}`);
+                    const a2aPromises = subAgents.map((subAgent) =>
+                        sendAgentToAgentPayment(primaryAgent, subAgent, `coord:${subAgent}`).catch((e) => {
+                            console.error(`[A2A] payment error:`, e);
+                            return undefined;
+                        })
+                    );
+                    await Promise.race([Promise.all(a2aPromises), new Promise<void>((r) => setTimeout(r, 12000))]);
+                }
+                const rendered = renderFastFromTools(lastToolResultsByName);
+                if (rendered) {
+                    console.log(`[FastMode] rendered from tools in ${Date.now() - t0}ms (tools=${routed.map(r=>r.name).join(",")})`);
+                    return {
+                        response: stripInlineRagCitations(rendered),
+                        agentsUsed: Array.from(agentsUsed),
+                        x402Transactions,
+                        a2aPayments: currentA2APayments,
+                        partial,
+                        ragSources,
+                    };
+                }
+            }
         }
 
         const toTool = (fn: any): GroqTool => ({
@@ -1482,19 +1836,23 @@ export async function generateResponse(
 
         let turns = 0;
         const lastToolResultsByName: Record<string, any> = {};
+        // Permanent fix: default to NO tool-calling on Groq to avoid HTTP 400 tool_use_failed.
+        // Tool routing is handled deterministically by Fast Mode / heuristics above.
         let completion = await withRetry(() =>
             groqChatComplete({
                 messages,
-                tools,
-                toolChoice: "auto",
+                tools: GROQ_TOOL_CALLING ? tools : undefined,
+                toolChoice: GROQ_TOOL_CALLING ? "auto" : "none",
                 temperature: 0.2,
                 maxTokens: 650,
                 timeoutMs: Math.min(GROQ_TIMEOUT_MS, Math.max(8000, remainingMs() + 5000)),
             })
         );
-        console.log(`[Groq] first completion in ${Date.now() - t0}ms (toolCalls=${completion.toolCalls.length}, content=${completion.content ? "yes" : "no"})`);
+        console.log(
+            `[Groq] first completion in ${Date.now() - t0}ms (toolCalls=${completion.toolCalls.length}, content=${completion.content ? "yes" : "no"}, toolCalling=${GROQ_TOOL_CALLING ? "on" : "off"})`
+        );
 
-        while (completion.toolCalls.length > 0 && turns < 5) {
+        while (GROQ_TOOL_CALLING && completion.toolCalls.length > 0 && turns < 5) {
             turns++;
             // IMPORTANT: OpenAI-style tool calling requires an assistant message that contains `tool_calls`,
             // followed by one `tool` message per tool_call_id. Without this, models sometimes return empty final text.
@@ -1518,6 +1876,21 @@ export async function generateResponse(
                     return r;
                 })
             );
+
+            // Fast mode: skip the second Groq "write-up" call and render directly from tool outputs.
+            if (FAST_MODE) {
+                const rendered = renderFastFromTools(lastToolResultsByName);
+                if (rendered) {
+                    return {
+                        response: stripInlineRagCitations(rendered),
+                        agentsUsed: Array.from(agentsUsed),
+                        x402Transactions,
+                        a2aPayments: currentA2APayments,
+                        partial,
+                        ragSources,
+                    };
+                }
+            }
 
             // If we ran out of time budget, stop tool loop and let fallback logic handle it.
             if (remainingMs() <= 0) break;
@@ -1561,6 +1934,7 @@ export async function generateResponse(
         const finalText =
             responseText ||
             "I've processed the market data but am unable to generate a summary at this moment. You can see the raw data in the activity feed below.";
+        const finalTextClean = stripInlineRagCitations(finalText);
 
         // If Gemini fails to produce final text, but we have deterministic tool output,
         // generate a high-quality fallback response for the most common demo tool (Price Oracle).
@@ -1599,7 +1973,7 @@ export async function generateResponse(
                 ? "The price feed timed out (CoinGecko can be slow). Please retry."
                 : "The price feed had a temporary issue. Please retry.";
             return {
-                response: `I couldn’t fetch a fresh price for **${sym}** right now. ${hint}`,
+                response: stripInlineRagCitations(`I couldn’t fetch a fresh price for **${sym}** right now. ${hint}`),
                 agentsUsed: Array.from(agentsUsed),
                 x402Transactions,
                 a2aPayments: currentA2APayments,
@@ -1639,7 +2013,7 @@ export async function generateResponse(
                     return `${i + 1}. **${name}**${bits ? ` — ${bits}` : ""}`;
                 });
                 return {
-                    response: `### Top bridges (by TVL)\n\n${top.join("\n\n")}`,
+                    response: stripInlineRagCitations(`### Top bridges (by TVL)\n\n${top.join("\n\n")}`),
                     agentsUsed: Array.from(agentsUsed),
                     x402Transactions,
                     a2aPayments: currentA2APayments,
@@ -1652,11 +2026,12 @@ export async function generateResponse(
         const trimmed = (responseText || "").trim();
         const substantiveAnswer = trimmed.length >= 180;
         const clientPartial = partial && !substantiveAnswer;
-        const responseOut = substantiveAnswer
-            ? finalText
+        const baseOut = substantiveAnswer
+            ? finalTextClean
             : clientPartial
-                ? `${finalText}\n\n**(Partial)** Some tools hit the time limit; try a shorter question or ask again.`
-                : finalText;
+                ? `${finalTextClean}\n\n**(Partial)** Some tools hit the time limit; try a shorter question or ask again.`
+                : finalTextClean;
+        const responseOut = stripInlineRagCitations(baseOut);
 
         return {
             response: responseOut,
@@ -1668,6 +2043,35 @@ export async function generateResponse(
         };
     } catch (error: any) {
         console.error(`[Gemini] ⚠️ Error generating response:`, error?.message);
+
+        // Permanent mitigation: Groq tool-calling sometimes fails with HTTP 400 tool_use_failed.
+        // If that happens, fall back to deterministic tool routing (fastRouteTools) and templated rendering.
+        const msg = String(error?.message || "");
+        if (msg.includes("tool_use_failed") || msg.includes("Failed to call a function")) {
+            try {
+                const routed = fastRouteTools(prompt || "");
+                if (routed.length) {
+                    const lastToolResultsByName: Record<string, any> = {};
+                    await Promise.all(
+                        routed.map(async (c) => {
+                            const r = await executeToolCall(c);
+                            lastToolResultsByName[r.name] = wrapToolResult(r.raw);
+                        })
+                    );
+                    const rendered = renderFastFromTools(lastToolResultsByName);
+                    if (rendered) {
+                        return {
+                            response: stripInlineRagCitations(rendered),
+                            agentsUsed: Array.from(agentsUsed),
+                            x402Transactions,
+                            a2aPayments: currentA2APayments,
+                            partial: false,
+                            ragSources,
+                        };
+                    }
+                }
+            } catch {}
+        }
         
         if (error?.message?.includes("503") || error?.message?.includes("504")) {
             return {
