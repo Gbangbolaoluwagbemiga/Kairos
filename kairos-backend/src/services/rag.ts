@@ -319,7 +319,14 @@ export async function retrieveRagAugmentation(userPrompt: string): Promise<RagAu
         const maxInPrompt = Math.max(1, Math.min(5, Number(process.env.KAIROS_RAG_MAX_CHUNKS || 3)));
 
         const ranked = index
-            .map((c) => ({ c, score: cosineSim(qVec, c.vec) }))
+            .map((c) => {
+                let score = cosineSim(qVec, c.vec);
+                // Hard-boost Kairos internal knowledge for product questions
+                if (productKairosQuestion && c.source.includes("kairos-knowledge.md")) {
+                    score += 0.8; 
+                }
+                return { c, score };
+            })
             .filter((x) => x.score >= minScore)
             .sort((a, b) => b.score - a.score);
 

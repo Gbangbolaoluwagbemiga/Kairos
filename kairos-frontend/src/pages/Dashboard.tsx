@@ -26,7 +26,8 @@ const Dashboard = () => {
     tasksCompleted: 0,
     rating: 0,
     totalRatings: 0,
-    avgResponseTime: "0s"
+    avgResponseTime: "0s",
+    trend: 0
   });
 
   // Load selected agent from navigation state or localStorage
@@ -59,7 +60,8 @@ const Dashboard = () => {
           tasksCompleted: data.tasksCompleted || 0,
           rating: data.rating || 0,
           totalRatings: data.totalRatings || 0,
-          avgResponseTime: data.avgResponseTime || "0s"
+          avgResponseTime: data.avgResponseTime || "0s",
+          trend: data.trend || 0,
         });
 
         // Update agent name and wallet from backend if not already set
@@ -132,7 +134,7 @@ const Dashboard = () => {
 
           {/* Stats Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <TreasuryCard balance={parseFloat(stats.treasury)} trend={0} />
+            <TreasuryCard balance={parseFloat(stats.treasury)} trend={parseFloat(stats.trend.toString())} />
             <TasksCard count={stats.tasksCompleted} />
           </div>
 

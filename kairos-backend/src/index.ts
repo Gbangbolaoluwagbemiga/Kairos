@@ -28,6 +28,7 @@ import {
     getAllAgentStats,
     getAgentStatsById,
     getAgentTreasuryBalance,
+    getAgentTreasuryTrend,
     getPersistedLogicalIdsForAgent,
     getRecentQueries
 } from "./services/supabase.js";
@@ -699,10 +700,11 @@ app.get("/dashboard/stats", async (req, res) => {
     const agentId = (Array.isArray(rawId) ? rawId[0] : rawId) as string | undefined;
     try {
         if (agentId) {
-            const [stats, dbBalance, persistedLogicalIds] = await Promise.all([
+            const [stats, dbBalance, persistedLogicalIds, recentTrend] = await Promise.all([
                 getAgentStatsById(agentId),
                 getAgentTreasuryBalance(agentId),
                 getPersistedLogicalIdsForAgent(agentId),
+                getAgentTreasuryTrend(agentId)
             ]);
 
             const localAgentLogs = localQueryLogs.filter(q => q.agentId === agentId);
@@ -717,17 +719,40 @@ app.get("/dashboard/stats", async (req, res) => {
 
             const treasury = dbBalance + localDelta;
             const usageCount = stats?.usageCount || localAgentLogs.filter(q => q.direction !== 'debit').length;
+            
+            // Calculate trend percentage (daily growth relative to total)
+            let trendPct = 0;
+            if (treasury > 0 && recentTrend > 0) {
+                trendPct = (recentTrend / treasury) * 100;
+            }
 
             res.json({
                 agentId,
                 tasksCompleted: usageCount,
                 rating: stats?.rating || 0,
                 treasury: treasury.toFixed(3),
+                trend: trendPct > 0 ? trendPct.toFixed(1) : 0,
             });
         } else {
-            const usageCount = await getTotalUsageCount();
+            const [usageCount, dbBalance, recentTrend] = await Promise.all([
+                getTotalUsageCount(),
+                getAgentTreasuryBalance("oracle"), // Total treasury fallback
+                getAgentTreasuryTrend()
+            ]);
+            
             const fallbackUsageCount = localQueryLogs.length;
-            res.json({ usageCount: usageCount || fallbackUsageCount });
+            const treasury = dbBalance || 0;
+            
+            let trendPct = 0;
+            if (treasury > 0 && recentTrend > 0) {
+                trendPct = (recentTrend / treasury) * 100;
+            }
+            
+            res.json({ 
+                usageCount: usageCount || fallbackUsageCount,
+                treasury: treasury.toFixed(3),
+                trend: trendPct > 0 ? trendPct.toFixed(1) : 0,
+            });
         }
     } catch (error) {
         res.status(500).json({ error: (error as Error).message });

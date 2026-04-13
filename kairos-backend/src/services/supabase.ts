@@ -483,6 +483,40 @@ export async function getAgentTreasuryBalance(agentId: string): Promise<number> 
     }, 0);
 }
 
+// Get the treasury earned in the last 24 hours to calculate trend
+export async function getAgentTreasuryTrend(agentId?: string): Promise<number> {
+    if (!supabase) return 0;
+
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    let query = supabase
+        .from('query_logs')
+        .select('nominal_usd, direction')
+        .gte('created_at', yesterday.toISOString());
+        
+    if (agentId) {
+        query = query.eq('agent_id', agentId);
+    }
+
+    const { data, error } = await query;
+    if (error || !data) return 0;
+
+    const rowAmt = (row: { nominal_usd?: unknown; direction?: string | null }) => {
+        const raw = row.nominal_usd;
+        const n = raw == null || raw === '' ? NaN : Number.parseFloat(String(raw));
+        if (Number.isFinite(n) && n > 0) return n;
+        const d = (row.direction || 'credit').toLowerCase();
+        return d === 'debit' ? 0.005 : 0.01;
+    };
+
+    return data.reduce((sum, row) => {
+        const amt = rowAmt(row);
+        const d = (row.direction || 'credit').toLowerCase();
+        return d === 'debit' ? sum - amt : sum + amt;
+    }, 0);
+}
+
 // Get stats for a single agent (optimized - no loop)
 export async function getAgentStatsById(agentId: string): Promise<AgentStats | null> {
     const { rating, totalRatings } = await getAgentRatingById(agentId);
