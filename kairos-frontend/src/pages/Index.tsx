@@ -21,11 +21,11 @@ const AGENT_PROMPTS = [
 const FEATURED_AGENTS = [
   { id: 'oracle', name: 'Price Oracle', desc: 'Live prices, ATH, and market peaks', price: '0.01', color: '#a78bfa' },
   { id: 'news',   name: 'News Scout',   desc: 'Real-time news & sentiment', price: '0.01', color: '#60a5fa' },
-  { id: 'scout',  name: 'Chain Scout',  desc: 'On-chain analytics & TVL',    price: '0.02', color: '#34d399' },
+  { id: 'scout',  name: 'Chain Scout',  desc: 'On-chain analytics & TVL',    price: '0.01', color: '#34d399' },
   { id: 'yield',  name: 'Yield Optimizer', desc: 'DeFi APY aggregator',      price: '0.01', color: '#fbbf24' },
   { id: 'tokenomics', name: 'Tokenomics Analyzer', desc: 'Supply & unlock intelligence', price: '0.01', color: '#f47272' },
-  { id: 'stellar-scout', name: 'Stellar Scout', desc: 'SDEX + Stellar DeFi analytics', price: '0.02', color: '#22d3ee' },
-  { id: 'perp', name: 'Perp Stats', desc: 'Funding, OI and perp market heat', price: '0.02', color: '#38bdf8' },
+  { id: 'stellar-scout', name: 'Stellar Scout', desc: 'SDEX + Stellar DeFi analytics', price: '0.01', color: '#22d3ee' },
+  { id: 'perp', name: 'Perp Stats', desc: 'Funding, OI and perp market heat', price: '0.01', color: '#38bdf8' },
   { id: 'protocol', name: 'Protocol Stats', desc: 'TVL, fees, revenue by protocol', price: '0.01', color: '#fb7185' },
   { id: 'bridges', name: 'Bridge Monitor', desc: 'Cross-chain bridge flow tracking', price: '0.01', color: '#c084fc' },
 ];

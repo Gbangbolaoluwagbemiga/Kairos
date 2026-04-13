@@ -149,8 +149,11 @@ export function ActivityFeed({ agentId }: ActivityFeedProps) {
                     Confirming on-chain…
                   </span>
                 ) : (
-                  <span className="text-[10px] text-emerald-400/60 text-right">
-                    ✓ Settled
+                  <span
+                    className="text-[10px] text-muted-foreground/70 text-right"
+                    title="No on-chain transaction hash was recorded for this row"
+                  >
+                    Receipt unavailable
                   </span>
                 )}
               </div>

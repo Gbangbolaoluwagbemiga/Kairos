@@ -56,7 +56,6 @@ const router = Router();
 
 const DEMO_PRICES_XLM: Record<string, string> = {
     "$0.01": "0.0100000",
-    "$0.02": "0.0200000",
 };
 
 function getSellerByAgentId(agentId: string): string | undefined {
@@ -72,7 +71,7 @@ function getSellerByAgentId(agentId: string): string | undefined {
 
 router.post("/demo/pay", async (req: Request, res: Response) => {
     try {
-        const { agentId, price } = req.body as { agentId?: string; price?: "$0.01" | "$0.02" };
+        const { agentId, price } = req.body as { agentId?: string; price?: "$0.01" };
         if (!agentId) return res.status(400).json({ success: false, error: "agentId required" });
 
         const seller = getSellerByAgentId(agentId);
@@ -160,9 +159,9 @@ router.get('/oracle/price', oracleGateway.require('$0.01') as any, async (req: R
 /**
  * POST /oracle/prices
  * Body: { symbols: ["BTC", "ETH", ...] }
- * Protected: $0.02 for batch
+ * Protected: $0.01 for batch
  */
-router.post('/oracle/prices', oracleGateway.require('$0.02') as any, async (req: Request, res: Response) => {
+router.post('/oracle/prices', oracleGateway.require('$0.01') as any, async (req: Request, res: Response) => {
     try {
         const { symbols } = req.body as { symbols: string[] };
         const payment = getPaymentInfo(req);
@@ -332,10 +331,10 @@ router.get('/yield/asset', yieldGateway.require('$0.01') as any, async (req: Req
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TOKENOMICS ANALYZER ENDPOINTS - $0.02 per query
+// TOKENOMICS ANALYZER ENDPOINTS - $0.01 per query
 // ─────────────────────────────────────────────────────────────────────────────
 
-router.get('/tokenomics/analyze', tokenomicsGateway.require('$0.02') as any, async (req: Request, res: Response) => {
+router.get('/tokenomics/analyze', tokenomicsGateway.require('$0.01') as any, async (req: Request, res: Response) => {
     try {
         const symbol = req.query.symbol as string || 'ARB';
         const payment = getPaymentInfo(req);
@@ -370,9 +369,9 @@ router.get('/tokenomics/analyze', tokenomicsGateway.require('$0.02') as any, asy
 
 /**
  * GET /perp/markets
- * Protected: $0.02 per request
+ * Protected: $0.01 per request
  */
-router.get('/perp/markets', perpGateway.require('$0.02') as any, async (req: Request, res: Response) => {
+router.get('/perp/markets', perpGateway.require('$0.01') as any, async (req: Request, res: Response) => {
     try {
         const payment = getPaymentInfo(req);
         console.log(`[x402 Perp] Market Data, paid by ${payment?.payer}`);
@@ -398,9 +397,9 @@ router.get('/perp/markets', perpGateway.require('$0.02') as any, async (req: Req
 
 /**
  * GET /perp/global
- * Protected: $0.02 per request
+ * Protected: $0.01 per request
  */
-router.get('/perp/global', perpGateway.require('$0.02') as any, async (req: Request, res: Response) => {
+router.get('/perp/global', perpGateway.require('$0.01') as any, async (req: Request, res: Response) => {
     try {
         const payment = getPaymentInfo(req);
         console.log(`[x402 Perp] Global Stats, paid by ${payment?.payer}`);

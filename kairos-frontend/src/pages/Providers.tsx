@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Layout } from '@/components/layout/Layout';
 import { Search, Star, Clock, Zap, ArrowRight, TrendingUp, Newspaper, BarChart3, Coins, PieChart, Image, Activity, ArrowLeftRight, Database } from 'lucide-react';
@@ -87,6 +87,12 @@ export default function Providers() {
     return matchSearch && matchCat;
   });
 
+  const avgPriceLabel = useMemo(() => {
+    if (!providers.length) return '—';
+    const avg = providers.reduce((s, p) => s + p.price, 0) / providers.length;
+    return `$${avg.toFixed(2)}/call`;
+  }, [providers]);
+
   const handleConnect = (provider: Provider) => {
     localStorage.setItem('active_provider_id',   provider.id);
     localStorage.setItem('active_provider_name', provider.name);
@@ -116,7 +122,7 @@ export default function Providers() {
           <div className="grid grid-cols-3 gap-3 animate-fade-in-up delay-100">
             {[
               { label: 'Active Agents',   value: providers.length || '—',  color: '#a78bfa' },
-              { label: 'Avg Price',        value: '$0.015/call',              color: '#fbbf24' },
+              { label: 'Avg Price',        value: avgPriceLabel,              color: '#fbbf24' },
               { label: 'Network',          value: 'Stellar',                  color: '#34d399' },
             ].map(({ label, value, color }) => (
               <div key={label} className="glass-card px-4 py-3">

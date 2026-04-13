@@ -378,36 +378,169 @@ function stripInlineRagCitations(text: string): string {
     return cleaned;
 }
 
-function renderFastFromTools(last: Record<string, any>): string | null {
-    const sections: string[] = [];
+type ToolResultsMap = Record<string, any>;
 
-    const has = (k: string) => last[k] && !last[k].error;
+function pushToolResult(map: ToolResultsMap, key: string, value: any) {
+    const existing = map[key];
+    if (existing === undefined) {
+        map[key] = value;
+        return;
+    }
+    if (Array.isArray(existing)) {
+        existing.push(value);
+        return;
+    }
+    map[key] = [existing, value];
+}
 
-    if (has("getPriceData")) {
-        const d = last.getPriceData as any;
-        const sym = (d.symbol || "").toUpperCase();
-        const name = d.name || sym || "Token";
-        const price = d.price != null ? `$${Number(d.price).toLocaleString(undefined, { maximumFractionDigits: 6 })}` : "N/A";
-        const change = d.change24h != null ? `${Number(d.change24h).toFixed(2)}%` : "N/A";
-        const athNum = d.ath != null ? Number(d.ath) : NaN;
-        const ath = Number.isFinite(athNum) ? `$${athNum.toLocaleString(undefined, { maximumFractionDigits: 6 })}` : "N/A";
-        const athDate = d.athDate ? new Date(d.athDate).toLocaleDateString() : "N/A";
-        const drawdown =
-            Number.isFinite(athNum) && Number.isFinite(Number(d.price)) && athNum > 0
-                ? `${(((Number(d.price) - athNum) / athNum) * 100).toFixed(1)}%`
-                : null;
-        sections.push(
-            `The current price of **${name} (${sym})** is **${price}**.\n\n` +
-                `- 24h change: ${change}\n` +
-                `- Market cap: ${d.marketCap != null ? `$${Number(d.marketCap).toLocaleString()}` : "N/A"}\n` +
-                `- Volume (24h): ${d.volume24h != null ? `$${Number(d.volume24h).toLocaleString()}` : "N/A"}\n` +
-                `- ATH: ${ath} (reached ${athDate})` +
-                (drawdown ? `\n- vs ATH: ${drawdown}` : "")
-        );
+function getFirstOk(v: any): any | null {
+    if (Array.isArray(v)) {
+        for (const item of v) {
+            if (item && !item.error) return item;
+        }
+        return null;
+    }
+    return v && !v.error ? v : null;
+}
+
+function getAllOk(v: any): any[] {
+    if (!v) return [];
+    if (Array.isArray(v)) return v.filter((x) => x && !x.error);
+    return v && !v.error ? [v] : [];
+}
+
+function isBuySuggestionPrompt(prompt: string): boolean {
+    const s = (prompt || "").toLowerCase();
+    return /\b(what|which)\s+(coin|crypto)\b.*\b(buy|purchase|get)\b|\b(best|top)\s+(coin|coins|crypto)\b|\bwhat\s+should\s+i\s+buy\b/.test(s);
+}
+
+function renderBuySuggestionsFromTools(toolMap: ToolResultsMap): string | null {
+    const prices = getAllOk(toolMap.getPriceData);
+    const trending = getFirstOk(toolMap.getTrending);
+    const news = getFirstOk(toolMap.getNews);
+
+    if (prices.length < 2 && !trending && !news) return null;
+
+    const priceBySym = new Map<string, any>();
+    for (const p of prices) {
+        const sym = String(p?.symbol || "").toUpperCase();
+        if (sym) priceBySym.set(sym, p);
     }
 
-    if (has("getNews") && (last.getNews?.articles?.length || last.getNews?.result?.articles?.length)) {
-        const articles = (last.getNews.articles || last.getNews.result?.articles || []).slice(0, 8);
+    const fmtPrice = (p: any) => {
+        if (!p || p.price == null) return "N/A";
+        return `$${Number(p.price).toLocaleString(undefined, { maximumFractionDigits: 6 })}`;
+    };
+    const fmtChg = (p: any) => (p?.change24h == null ? "N/A" : `${Number(p.change24h).toFixed(2)}%`);
+
+    const majors = ["BTC", "ETH", "SOL", "XLM"].filter((s) => priceBySym.has(s));
+    const majorLines = majors.map((s) => {
+        const p = priceBySym.get(s);
+        return `- **${s}**: ${fmtPrice(p)} (24h ${fmtChg(p)})`;
+    });
+
+    const trendingHeadline = (() => {
+        const t = trending?.trending?.[0];
+        if (t?.headline) return String(t.headline);
+        return null;
+    })();
+
+    const newsTitles = (() => {
+        const arts = news?.articles || news?.result?.articles || [];
+        if (!Array.isArray(arts) || arts.length === 0) return [];
+        return arts.slice(0, 3).map((a: any) => String(a.title || "").trim()).filter(Boolean);
+    })();
+
+    // Deterministic, non-hallucinated shortlist (uses only what we actually fetched).
+    const shortlist: Array<{ sym: string; why: string }> = [];
+    if (priceBySym.has("BTC")) shortlist.push({ sym: "BTC", why: "large-cap core exposure; tends to lead market cycles" });
+    if (priceBySym.has("ETH")) shortlist.push({ sym: "ETH", why: "smart-contract backbone; broad liquidity + ecosystem" });
+    if (priceBySym.has("SOL")) shortlist.push({ sym: "SOL", why: "higher-beta L1; tends to outperform in risk-on phases" });
+    if (priceBySym.has("XLM")) shortlist.push({ sym: "XLM", why: "Stellar ecosystem exposure; useful if you’re active on Stellar" });
+
+    const uniqShortlist = Array.from(new Map(shortlist.map((x) => [x.sym, x])).values()).slice(0, 4);
+
+    const lines: string[] = [];
+    lines.push(`Here’s a **practical shortlist** (not financial advice):`);
+    for (const s of uniqShortlist) lines.push(`- **${s.sym}** — ${s.why}`);
+    if (uniqShortlist.length === 0) lines.push(`- **BTC / ETH** — safest default pair if you want broad exposure`);
+
+    lines.push(`\n**Quick market snapshot**`);
+    if (majorLines.length) lines.push(...majorLines);
+    if (trendingHeadline) lines.push(`- **Trend**: ${trendingHeadline}`);
+    if (newsTitles.length) {
+        lines.push(`\n**Top headlines (context)**`);
+        for (const t of newsTitles) lines.push(`- ${t}`);
+    }
+
+    lines.push(`\n**Simple allocation templates**`);
+    lines.push(`- Conservative: 70% BTC / 30% ETH`);
+    lines.push(`- Moderate: 50% BTC / 30% ETH / 20% SOL`);
+    lines.push(`- Aggressive: 35% BTC / 25% ETH / 30% SOL / 10% XLM`);
+    lines.push(`\nIf you tell me your **time horizon** and **risk level**, I’ll tailor this to you in one pass.`);
+
+    return stripInlineRagCitations(lines.join("\n"));
+}
+
+function renderFastFromTools(prompt: string, last: ToolResultsMap): string | null {
+    const sections: string[] = [];
+
+    const has = (k: string) => !!getFirstOk(last[k]);
+
+    // Special-case: user asked for buy suggestions → synthesize a coherent plan.
+    if (isBuySuggestionPrompt(prompt)) {
+        const buy = renderBuySuggestionsFromTools(last);
+        if (buy) return buy;
+    }
+
+    if (has("searchWeb")) {
+        const d = getFirstOk(last.searchWeb) as any;
+        const answer = d?.answer || d?.result?.answer || d?.result?.summary;
+        const sources = d?.sources || d?.result?.sources || [];
+        if (answer) {
+            sections.push(String(answer).trim());
+        }
+        if (Array.isArray(sources) && sources.length) {
+            const withUrls = sources.filter((s: any) => typeof s?.url === "string" && s.url.trim().length > 0);
+            if (withUrls.length) {
+                const lines = withUrls.slice(0, 6).map((s: any, i: number) => {
+                    const title = s?.title ? String(s.title) : `Source ${i + 1}`;
+                    const url = String(s.url);
+                    return `${i + 1}. ${title} — ${url}`;
+                });
+                sections.push(`**Sources**\n${lines.join("\n")}`);
+            }
+        }
+    }
+
+    if (has("getPriceData")) {
+        const all = getAllOk(last.getPriceData);
+        for (const d of all.slice(0, 4)) {
+            const sym = (d.symbol || "").toUpperCase();
+            const name = d.name || sym || "Token";
+            const price = d.price != null ? `$${Number(d.price).toLocaleString(undefined, { maximumFractionDigits: 6 })}` : "N/A";
+            const change = d.change24h != null ? `${Number(d.change24h).toFixed(2)}%` : "N/A";
+            const athNum = d.ath != null ? Number(d.ath) : NaN;
+            const ath = Number.isFinite(athNum) ? `$${athNum.toLocaleString(undefined, { maximumFractionDigits: 6 })}` : "N/A";
+            const athDate = d.athDate ? new Date(d.athDate).toLocaleDateString() : "N/A";
+            const drawdown =
+                Number.isFinite(athNum) && Number.isFinite(Number(d.price)) && athNum > 0
+                    ? `${(((Number(d.price) - athNum) / athNum) * 100).toFixed(1)}%`
+                    : null;
+            sections.push(
+                `The current price of **${name} (${sym})** is **${price}**.\n\n` +
+                    `- 24h change: ${change}\n` +
+                    `- Market cap: ${d.marketCap != null ? `$${Number(d.marketCap).toLocaleString()}` : "N/A"}\n` +
+                    `- Volume (24h): ${d.volume24h != null ? `$${Number(d.volume24h).toLocaleString()}` : "N/A"}\n` +
+                    `- ATH: ${ath} (reached ${athDate})` +
+                    (drawdown ? `\n- vs ATH: ${drawdown}` : "")
+            );
+        }
+    }
+
+    if (has("getNews") && ((getFirstOk(last.getNews) as any)?.articles?.length || (getFirstOk(last.getNews) as any)?.result?.articles?.length)) {
+        const dn = getFirstOk(last.getNews) as any;
+        const articles = (dn.articles || dn.result?.articles || []).slice(0, 8);
         const lines = articles.map((a: any, i: number) => `${i + 1}. ${a.title}${a.source ? ` — ${a.source}` : ""}`);
         sections.push(`**Latest headlines**\n${lines.join("\n")}`);
     }
@@ -564,6 +697,27 @@ function renderFastFromTools(last: Record<string, any>): string | null {
     return stripInlineRagCitations(sections.join("\n\n"));
 }
 
+function isSmallTalk(prompt: string): boolean {
+    const s = (prompt || "").trim().toLowerCase();
+    if (!s) return true;
+    // Keep this intentionally strict so we still route most non-trivial prompts to a specialist.
+    if (s.length > 32) return false;
+    return /^(hi|hey|hello|gm|good\s+morning|good\s+afternoon|good\s+evening|thanks|thank\s+you|ty|sup|yo|hola|bonjour|ciao|ok|okay)\b[!?. ]*$/.test(s);
+}
+
+function isKairosProductPrompt(prompt: string): boolean {
+    const s = (prompt || "").trim().toLowerCase();
+    if (!s) return false;
+    // If user is asking about "Kairos" itself, assume they mean this app unless they specify rhetoric/theology.
+    const mentionsKairos = /\bkairos\b/.test(s);
+    if (!mentionsKairos) return false;
+    const looksLikeDefinition =
+        /\b(what\s+is|what'?s|define|meaning|about)\b/.test(s) ||
+        /\b(app|product|project|platform|protocol|marketplace|chatbot|agent)\b/.test(s);
+    const explicitlyNotOurApp = /\b(rhetoric|greek|theology|bible|religion|philosophy|linguistics)\b/.test(s);
+    return looksLikeDefinition && !explicitlyNotOurApp;
+}
+
 function fastRouteTools(prompt: string): Array<{ name: string; args: any }> {
     const q = (prompt || "").trim();
     const s = q.toLowerCase();
@@ -589,6 +743,22 @@ function fastRouteTools(prompt: string): Array<{ name: string; args: any }> {
     // News
     if (/\b(latest|breaking|news|headlines)\b/.test(s)) {
         add("getNews", { category: /\bbreaking\b/.test(s) ? "breaking" : /\bdefi\b/.test(s) ? "defi" : /\bbitcoin\b|\bbtc\b/.test(s) ? "bitcoin" : "all" });
+    }
+
+    // "What coin should I buy" / suggestions: pull trend + headlines + a few majors for context
+    if (/\b(what|which)\s+coin\b.*\b(buy|purchase|get)\b|\b(best|top)\s+(coin|coins|crypto)\b|\bcoin\s+suggestion\b|\bwhat\s+should\s+i\s+buy\b/.test(s)) {
+        add("getTrending", {});
+        add("getNews", { category: "all" });
+        // anchor the answer with liquid majors (deterministic, avoids symbol guessing)
+        add("getPriceData", { symbol: "BTC" });
+        add("getPriceData", { symbol: "ETH" });
+        add("getPriceData", { symbol: "SOL" });
+        add("getPriceData", { symbol: "XLM" });
+    }
+
+    // "Why/what happened/market conditions" needs web context (not just RSS headlines)
+    if (/\b(why|what\s+happened|what\s+is\s+going\s+on|market\s+condition|macro|regulation|sec|lawsuit|etf|fed|cpi|rates?)\b/.test(s)) {
+        add("searchWeb", { query: q });
     }
 
     const wantsYields = /\byield(s)?\b|\bapy\b|\bearn\b.*\b(usdc|xlm|stellar)\b|\blend\b|\baquarius\b/.test(s);
@@ -776,6 +946,7 @@ Tool routing:
 - Greetings: no tools
 
 Rules:
+- If the user asks what "Kairos" is / what Kairos does, explain THIS Kairos app (multi-agent crypto assistant + Stellar focus), not the generic dictionary term.
 - Never mention payments/x402/USDC transfers.
 - Keep answers moderate length: ~6–12 lines, structured bullets + 1 short paragraph if useful.
 - If tools error, answer generally without mentioning errors.`;
@@ -792,6 +963,7 @@ You facilitate a multi-agent economy where agents pay each other using x402 USDC
 - For **Stellar SDEX / network stats**: call **getStellarStats** or **getStellarAccount** as appropriate.
 - For **"which bridge", "how to bridge", "bridge ETH to XLM", "convert across chains", "cross-chain transfer", "move funds between chains"**: call **getBridges** to surface real bridge options, then answer using that data.
 - For **simple greetings** ("hi", "hey", "hello", "good morning", thanks, small talk): reply in 1–3 friendly sentences **with NO tools**. Do not attribute the reply to a named specialist agent.
+- If the user asks what "Kairos" is / what Kairos does / "what is this app", explain THIS Kairos product (multi-agent crypto assistant + agent marketplace on Stellar). Do NOT answer with the generic dictionary definition of the word “kairos”.
 
 **IMPORTANT CONTEXT:**
 - You operate exclusively in the crypto/blockchain/DeFi space, with a special focus on STELLAR and SOROBAN.
@@ -1652,7 +1824,11 @@ export async function generateResponse(
             if (call.name === "searchWeb") {
                 agentsUsed.add("news");
                 const args = call.args as { query: string };
+                const payP = createNewsScoutPayment(`web:${(args.query || "").slice(0, 40)}`);
+                void payP.then((h) => { if (h) receiptSink?.("news", h); }).catch(() => {});
                 const r = await withTimeout(handleSearchWeb(args.query), perCallTimeout);
+                const txHash = await withTimeoutOptional(payP, 200);
+                if (txHash) x402Transactions["news"] = txHash;
                 return { name: call.name, raw: r.data };
             }
             if (call.name === "getProtocolStats") {
@@ -1758,44 +1934,60 @@ export async function generateResponse(
             };
         }
 
-        // Fast mode: bypass Groq entirely for common, tool-first queries.
-        if (FAST_MODE) {
-            const routed = fastRouteTools(prompt || "");
-            if (routed.length) {
-                const lastToolResultsByName: Record<string, any> = {};
-                await Promise.all(
-                    routed.map(async (c) => {
-                        const r = await executeToolCall(c);
-                        lastToolResultsByName[r.name] = wrapToolResult(r.raw);
+        // Deterministic routing (always-on): ensures prompts don't "fall through" without a specialist.
+        // - Small talk: no tools.
+        // - Otherwise: pick best tool(s); if heuristics don't match, fall back to web research.
+        // IMPORTANT: Kairos "about the app" prompts should be answered from system prompt + RAG context,
+        // not via web search which returns the generic dictionary meaning.
+        const routed = (isSmallTalk(prompt || "") || isKairosProductPrompt(prompt || "")) ? [] : fastRouteTools(prompt || "");
+        const routedWithFallback =
+            routed.length > 0
+                ? routed
+                : (isSmallTalk(prompt || "") || isKairosProductPrompt(prompt || ""))
+                    ? []
+                    : [{ name: "searchWeb", args: { query: (prompt || "").trim() } }];
+
+        if (routedWithFallback.length) {
+                const lastToolResultsByName: ToolResultsMap = {};
+            await Promise.all(
+                routedWithFallback.map(async (c) => {
+                    const r = await executeToolCall(c);
+                        pushToolResult(lastToolResultsByName, r.name, wrapToolResult(r.raw));
+                })
+            );
+
+            // Preserve the on-chain "A2A flow" demo when multiple agents were used.
+            const usedAgents = Array.from(agentsUsed);
+            if (usedAgents.length >= 2) {
+                const primaryAgent = pickPrimaryAgent(usedAgents);
+                const subAgents = usedAgents.filter((a) => a !== primaryAgent);
+                console.log(`[A2A] 🤝 ${primaryAgent} coordinating with: ${subAgents.join(", ")}`);
+                const a2aPromises = subAgents.map((subAgent) =>
+                    sendAgentToAgentPayment(primaryAgent, subAgent, `coord:${subAgent}`).catch((e) => {
+                        console.error(`[A2A] payment error:`, e);
+                        return undefined;
                     })
                 );
+                await Promise.race([Promise.all(a2aPromises), new Promise<void>((r) => setTimeout(r, 12000))]);
+            }
 
-                // Preserve the on-chain "A2A flow" demo in fast mode when multiple agents were used.
-                const usedAgents = Array.from(agentsUsed);
-                if (usedAgents.length >= 2) {
-                    const primaryAgent = pickPrimaryAgent(usedAgents);
-                    const subAgents = usedAgents.filter((a) => a !== primaryAgent);
-                    console.log(`[A2A] 🤝 ${primaryAgent} coordinating with: ${subAgents.join(", ")}`);
-                    const a2aPromises = subAgents.map((subAgent) =>
-                        sendAgentToAgentPayment(primaryAgent, subAgent, `coord:${subAgent}`).catch((e) => {
-                            console.error(`[A2A] payment error:`, e);
-                            return undefined;
-                        })
+            const rendered = renderFastFromTools(prompt || "", lastToolResultsByName);
+            if (rendered) {
+                if (FAST_MODE) {
+                    console.log(
+                        `[FastMode] rendered from tools in ${Date.now() - t0}ms (tools=${routedWithFallback
+                            .map((r) => r.name)
+                            .join(",")})`
                     );
-                    await Promise.race([Promise.all(a2aPromises), new Promise<void>((r) => setTimeout(r, 12000))]);
                 }
-                const rendered = renderFastFromTools(lastToolResultsByName);
-                if (rendered) {
-                    console.log(`[FastMode] rendered from tools in ${Date.now() - t0}ms (tools=${routed.map(r=>r.name).join(",")})`);
-                    return {
-                        response: stripInlineRagCitations(rendered),
-                        agentsUsed: Array.from(agentsUsed),
-                        x402Transactions,
-                        a2aPayments: currentA2APayments,
-                        partial,
-                        ragSources,
-                    };
-                }
+                return {
+                    response: stripInlineRagCitations(rendered),
+                    agentsUsed: Array.from(agentsUsed),
+                    x402Transactions,
+                    a2aPayments: currentA2APayments,
+                    partial,
+                    ragSources,
+                };
             }
         }
 
@@ -1835,7 +2027,7 @@ export async function generateResponse(
         messages.push({ role: "user", content: augmentedUserText || (prompt || "").trim() });
 
         let turns = 0;
-        const lastToolResultsByName: Record<string, any> = {};
+        const lastToolResultsByName: ToolResultsMap = {};
         // Permanent fix: default to NO tool-calling on Groq to avoid HTTP 400 tool_use_failed.
         // Tool routing is handled deterministically by Fast Mode / heuristics above.
         let completion = await withRetry(() =>
@@ -1867,7 +2059,7 @@ export async function generateResponse(
                         args = {};
                     }
                     const r = await executeToolCall({ name: tc.function.name, args });
-                    lastToolResultsByName[r.name] = wrapToolResult(r.raw);
+                    pushToolResult(lastToolResultsByName, r.name, wrapToolResult(r.raw));
                     messages.push({
                         role: "tool",
                         tool_call_id: tc.id,
@@ -1879,7 +2071,7 @@ export async function generateResponse(
 
             // Fast mode: skip the second Groq "write-up" call and render directly from tool outputs.
             if (FAST_MODE) {
-                const rendered = renderFastFromTools(lastToolResultsByName);
+                const rendered = renderFastFromTools(prompt || "", lastToolResultsByName);
                 if (rendered) {
                     return {
                         response: stripInlineRagCitations(rendered),
@@ -2051,14 +2243,14 @@ export async function generateResponse(
             try {
                 const routed = fastRouteTools(prompt || "");
                 if (routed.length) {
-                    const lastToolResultsByName: Record<string, any> = {};
+                    const lastToolResultsByName: ToolResultsMap = {};
                     await Promise.all(
                         routed.map(async (c) => {
                             const r = await executeToolCall(c);
-                            lastToolResultsByName[r.name] = wrapToolResult(r.raw);
+                            pushToolResult(lastToolResultsByName, r.name, wrapToolResult(r.raw));
                         })
                     );
-                    const rendered = renderFastFromTools(lastToolResultsByName);
+                    const rendered = renderFastFromTools(prompt || "", lastToolResultsByName);
                     if (rendered) {
                         return {
                             response: stripInlineRagCitations(rendered),
