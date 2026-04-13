@@ -90,6 +90,16 @@ export interface A2APayment {
 // Track a2a payments for the current request
 let currentA2APayments: A2APayment[] = [];
 
+// Per-agent serial queue to avoid tx_bad_seq when an agent sends multiple payments quickly
+const agentPaymentQueues = new Map<string, Promise<any>>();
+
+function runAgentSerialized<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = agentPaymentQueues.get(agentId) || Promise.resolve();
+    const next = prev.then(() => fn());
+    agentPaymentQueues.set(agentId, next.then(() => undefined, () => undefined));
+    return next;
+}
+
 // Deterministic orchestrator priority — highest rank = always the primary payer.
 // Prevents race conditions from Set insertion order deciding who pays whom.
 const AGENT_ORCHESTRATOR_PRIORITY: Record<string, number> = {
@@ -128,18 +138,20 @@ async function sendAgentToAgentPayment(
     const amount = "0.0050000";
     const memoText = `a2a:${fromAgentId.slice(0, 7)}>${toAgentId.slice(0, 7)}`;
 
-    // Treasury-sponsored A2A: the memo records the delegation chain on-chain (auditable).
-    // We skip the direct agent wallet attempt entirely — it causes sequence conflicts when
-    // the agent's account was loaded while a treasury tx was in-flight, causing tx_bad_seq.
-    // The treasury already handles all payments serially, so this is safe and fast.
-    return runTreasurySerialized(async () => {
-        try {
-            const treasurySecret = config.stellar.sponsorSecret;
-            if (!treasurySecret?.startsWith('S')) return undefined;
-            const treasuryKeypair = StellarSdk.Keypair.fromSecret(treasurySecret);
-            const treasuryAccount = await horizonServer.loadAccount(treasuryKeypair.publicKey());
+    // True Agent-to-Agent Payment:
+    // The primary agent uses its own secret key to sign and pay the sub-agent.
+    const senderSecret = AGENT_SECRETS[fromAgentId];
+    if (!senderSecret || !senderSecret.startsWith('S')) {
+        console.warn(`[A2A] ⚠️ No secret key for ${fromAgentId}, skipping true A2A payment.`);
+        return undefined;
+    }
 
-            const tx = new StellarSdk.TransactionBuilder(treasuryAccount, {
+    return runAgentSerialized(fromAgentId, async () => {
+        try {
+            const senderKeypair = StellarSdk.Keypair.fromSecret(senderSecret);
+            const senderAccount = await horizonServer.loadAccount(senderKeypair.publicKey());
+
+            const tx = new StellarSdk.TransactionBuilder(senderAccount, {
                 fee: StellarSdk.BASE_FEE,
                 networkPassphrase,
             })
@@ -152,14 +164,15 @@ async function sendAgentToAgentPayment(
                 .setTimeout(30)
                 .build();
 
-            tx.sign(treasuryKeypair);
+            tx.sign(senderKeypair);
             const result = await horizonServer.submitTransaction(tx);
-            console.log(`[A2A] ✅ ${fromAgentId} → ${toAgentId} (${amount} USDC): ${(result as any).hash}`);
+            console.log(`[A2A] ✅ True A2A: ${fromAgentId} → ${toAgentId} (${amount} USDC): ${(result as any).hash}`);
             const payment: A2APayment = { from: fromAgentId, to: toAgentId, amount, txHash: (result as any).hash, label };
             currentA2APayments.push(payment);
             return payment;
         } catch (err: any) {
-            console.error(`[A2A] ❌ ${fromAgentId} → ${toAgentId} failed:`, err?.response?.data?.extras?.result_codes || err.message);
+            const code = err?.response?.data?.extras?.result_codes?.transaction || "unknown";
+            console.error(`[A2A] ❌ True A2A ${fromAgentId} → ${toAgentId} failed (${code}):`, err.message);
             return undefined;
         }
     });
