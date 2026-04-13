@@ -318,6 +318,11 @@ export async function retrieveRagAugmentation(userPrompt: string): Promise<RagAu
         const poolLimit = Math.max(8, Math.min(100, Number(process.env.KAIROS_RAG_TOP_K || 24)));
         const maxInPrompt = Math.max(1, Math.min(5, Number(process.env.KAIROS_RAG_MAX_CHUNKS || 3)));
 
+        const productKairosQuestion =
+            /\b(what|who)\s+(is|'s)\s+kairos\b|\bexplain\s+kairos\b|\bkairos\s+buddy\b|\babout\s+kairos\b|\btell\s+me\s+about\s+kairos\b/i.test(
+                trimmed
+            );
+
         const ranked = index
             .map((c) => {
                 let score = cosineSim(qVec, c.vec);
@@ -346,10 +351,6 @@ export async function retrieveRagAugmentation(userPrompt: string): Promise<RagAu
 
         // “What is Kairos?”-style questions are about the product; don’t inject arXiv / Gemini
         // embedding guide chunks just because vectors are loosely similar to “AI”.
-        const productKairosQuestion =
-            /\b(what|who)\s+(is|'s)\s+kairos\b|\bexplain\s+kairos\b|\bkairos\s+buddy\b|\babout\s+kairos\b|\btell\s+me\s+about\s+kairos\b/i.test(
-                trimmed
-            );
         if (productKairosQuestion) {
             const peripheral = (x: { c: IndexedChunk }) => {
                 const u = x.c.url || "";
