@@ -329,8 +329,7 @@ export async function retrieveRagAugmentation(userPrompt: string): Promise<RagAu
 
         let diverse = [...bestPerKey.values()].sort((a, b) => b.score - a.score);
 
-        // “What is Kairos?”-style questions are about the product; don’t inject arXiv / Gemini
-        // embedding guide chunks just because vectors are loosely similar to “AI”.
+        // “What is Kairos?”-style questions are about the product.
         if (productKairosQuestion) {
             const peripheral = (x: { c: IndexedChunk }) => {
                 const u = x.c.url || "";
@@ -339,8 +338,28 @@ export async function retrieveRagAugmentation(userPrompt: string): Promise<RagAu
                     (u.includes("ai.google.dev") && u.includes("embeddings"))
                 );
             };
-            const focused = diverse.filter((x) => !peripheral(x));
-            if (focused.length > 0) diverse = focused;
+            // For product questions, prefer Kairos local corpus over generic Stellar docs.
+            // This prevents irrelevant Stellar developer docs from dominating retrieval for "what is kairos".
+            const isRemoteWeb = (x: { c: IndexedChunk }) => (x.c.source || "").toLowerCase().startsWith("web ·");
+            const isKairosLocal = (x: { c: IndexedChunk }) => {
+                const src = (x.c.source || "").toLowerCase();
+                return (
+                    src.includes("kairos-knowledge.md") ||
+                    src.includes("agent-payments.md") ||
+                    src.includes("stellar-defi.md") ||
+                    src.includes("crypto-defi-glossary.md")
+                );
+            };
+
+            const noPeripheral = diverse.filter((x) => !peripheral(x));
+            const localKairos = noPeripheral.filter((x) => !isRemoteWeb(x) && isKairosLocal(x));
+            if (localKairos.length > 0) {
+                diverse = localKairos;
+            } else {
+                const localOnly = noPeripheral.filter((x) => !isRemoteWeb(x));
+                if (localOnly.length > 0) diverse = localOnly;
+                else diverse = noPeripheral;
+            }
         }
 
         const picked = diverse.slice(0, maxInPrompt);
