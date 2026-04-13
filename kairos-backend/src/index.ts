@@ -33,6 +33,8 @@ import {
 } from "./services/supabase.js";
 
 const app = express();
+// Railway / reverse proxies send X-Forwarded-* — required so express-rate-limit and req.ip stay valid.
+app.set("trust proxy", 1);
 
 type LocalQueryLog = {
     id: string;
@@ -222,26 +224,66 @@ async function horizonPaymentFromTx(txHash: string): Promise<{ code: string; amo
 const PORT = process.env.PORT || 3001;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-// CORS
-const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:8080'];
-app.use(cors({
-    origin: (origin, callback) => {
-        if (!origin || ALLOWED_ORIGINS.includes(origin)) {
-            callback(null, true);
-        } else {
-            console.warn(`[CORS] Blocked request from origin: ${origin}`);
-            callback(null, true); // Permissive for hackathon
-        }
-    },
-    credentials: true
-}));
+// CORS — default: reflect the browser Origin (works with any Vercel/custom domain). STRICT_CORS=1 = allowlist only.
+const DEFAULT_ORIGINS = ["http://localhost:5173", "http://localhost:3000", "http://localhost:8080"];
+function parseAllowedOrigins(): string[] {
+    const raw = process.env.ALLOWED_ORIGINS?.trim();
+    if (!raw) return [...DEFAULT_ORIGINS];
+    return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+const ALLOWED_ORIGINS = parseAllowedOrigins();
+const STRICT_CORS = process.env.STRICT_CORS === "1";
+
+function isVercelPreviewOrigin(origin: string): boolean {
+    try {
+        const u = new URL(origin);
+        return u.protocol === "https:" && /\.vercel\.app$/i.test(u.hostname);
+    } catch {
+        return false;
+    }
+}
+
+const CORS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+
+if (STRICT_CORS) {
+    app.use(
+        cors({
+            origin(origin, callback) {
+                if (!origin) {
+                    callback(null, true);
+                    return;
+                }
+                if (ALLOWED_ORIGINS.includes(origin) || isVercelPreviewOrigin(origin)) {
+                    callback(null, true);
+                    return;
+                }
+                console.warn(`[CORS] Blocked origin (STRICT_CORS=1): ${origin}`);
+                callback(new Error(`CORS blocked: ${origin}`));
+            },
+            credentials: true,
+            methods: CORS_METHODS,
+            maxAge: 86_400,
+        })
+    );
+} else {
+    // Reflect request Origin — avoids Railway/Vercel mismatches when ALLOWED_ORIGINS is wrong or stale.
+    app.use(
+        cors({
+            origin: true,
+            credentials: true,
+            methods: CORS_METHODS,
+            maxAge: 86_400,
+        })
+    );
+}
 
 // Rate Limiters
-const generalLimiter = rateLimit({ 
-    windowMs: 15 * 60 * 1000, 
+const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
     max: 500, // Increased for hackathon scaling
     standardHeaders: true, // Return rate limit info in headers
     legacyHeaders: false,
+    skip: (req) => req.method === "OPTIONS",
     handler: (req, res) => {
         res.status(429).json({ 
             success: false, 

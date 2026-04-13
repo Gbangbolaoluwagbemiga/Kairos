@@ -98,7 +98,7 @@ Railway should detect `package.json` **only after** root is set to `kairos-backe
 |--------|-----|
 | `Error creating build plan with Railpack` | Set **Root Directory** to `kairos-backend` and/or use **Dockerfile** builder. |
 | `npm ci` / `package.json` and lock file **not in sync** | Run **`npm install`** inside `kairos-backend`, commit **`package-lock.json`**, and redeploy. Railway uses `npm ci`, which requires an exact match. |
-| CORS errors in browser | Add your frontend origin to **`ALLOWED_ORIGINS`**. |
+| CORS / `Failed to fetch` / `502` from browser | The API sets **`trust proxy`** for Railway and uses **permissive CORS** by default (`Origin` reflected). Set **`STRICT_CORS=1`** only if you want an allowlist (`ALLOWED_ORIGINS` + `*.vercel.app`). If you still see **502**, open **Deploy Logs** (crash/OOM) — not a CORS-only issue. |
 | `502` / crash on boot | Check **Deploy Logs** for missing `GEMINI_API_KEY` or invalid secrets. |
 | DB / Supabase errors | Set `SUPABASE_URL` and `SUPABASE_ANON_KEY`; optional if you rely on in-memory fallback. |
 

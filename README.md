@@ -22,7 +22,7 @@ Kairos solves the "last mile" problem for AI agents: **payments**. Agents can re
 | Agent | ID | Capability |
 |---|---|---|
 | Price Oracle | `oracle` | Real-time prices, market cap, ATH via CoinGecko |
-| News Scout | `news` | Crypto news, sentiment, trending topics |
+| News Scout | `news` | Crypto headlines (aggregated RSS); Stellar account ledger snippets only when the user passes a valid `G…` address |
 | Yield Optimizer | `yield` | DeFi yields across 500+ protocols |
 | Tokenomics Analyzer | `tokenomics` | Supply, unlocks, inflation models |
 | Stellar Scout | `stellar-scout` | Stellar DeFi yields (Blend, Aquarius), account analysis |
@@ -44,9 +44,9 @@ kairos-backend/      Node.js + Express + TypeScript (deployed on Railway)
     services/
       gemini.ts           AI orchestrator — tool routing, x402 payments
       search.ts           Google Search grounding (Gemini 2.0 Flash)
-      agent-registry.ts   Mock registry → resolves agent address from ID
+      agent-registry.ts   Soroban registry (simulation read) with env-driven fallback
       price-oracle.ts     CoinGecko integration
-      news-scout.ts       Stellar Horizon news feed
+      news-scout.ts       Crypto RSS headlines (+ Horizon ops only for valid Stellar `G…` queries)
       yield-optimizer.ts  DeFi yield aggregation
       tokenomics-service.ts Token supply & unlock data
       defillama.ts        DeFiLlama TVL/fees/bridges
@@ -70,7 +70,7 @@ kairos-backend/      Node.js + Express + TypeScript (deployed on Railway)
   rag-corpus/
     kairos-knowledge.md   Domain knowledge for RAG
     sources.urls          External URLs indexed at startup
-contracts/              Soroban smart contracts (agent registry)
+contracts/              Soroban: `agent-registry/`, `spending-policy/`
 ```
 
 ---
@@ -121,7 +121,7 @@ Frontend runs at `http://localhost:5173`, backend at `http://localhost:3001`.
 |---|---|---|
 | `STELLAR_NETWORK` | `testnet` | `testnet` or `public` |
 | `PORT` | `3001` | HTTP port |
-| `ALLOWED_ORIGINS` | localhost variants | CORS allowed origins |
+| `ALLOWED_ORIGINS` | _(optional)_ | Comma-separated origins; only enforced when **`STRICT_CORS=1`**. Default CORS reflects any browser `Origin` (good for Vercel + Railway). |
 
 **Agent addresses (all 9 required):**
 
@@ -143,6 +143,9 @@ STELLAR_DEX_X402_ADDRESS
 |---|---|
 | `COINGECKO_API_KEY` | Price oracle hits public rate limits |
 | `SUPABASE_URL` + `SUPABASE_ANON_KEY` | No persistent chat history, ratings, or response time tracking |
+| `AGENT_REGISTRY_CONTRACT_ID` | Agent address resolution falls back to built-in map (payments still work) |
+| `SPENDING_POLICY_CONTRACT_ID` | Spending-policy demo / scripts target only what you configure locally |
+| `STRICT_CORS` | Set to `1` to allow only **`ALLOWED_ORIGINS`** plus `https://*.vercel.app`. If unset, CORS is **permissive** (reflects any `Origin`) — better for hackathon deploys; tighten for real production. |
 
 ### Frontend (`kairos-frontend/.env`)
 
@@ -315,17 +318,10 @@ Kairos is architecturally aligned with the **Machine Payments Protocol (MPP)** a
 | Programmable access | Soroban registry controls agent metadata |
 | Microtransactions | Sub-cent payments via USDC on Stellar |
 
-Future work: Integrate `stellar-mpp-sdk` for formal MPP flows, implement spending policies via contract accounts.
+Future work: Wire `stellar-mpp-sdk` for formal MPP facilitator flows. **Spending policy** is already demonstrated on Soroban (`spending-policy/` contract); deeper contract-account enforcement can extend that path.
 
 ---
 
-## Demo Video
-
-*2-3 minute video walkthrough coming soon*
-
----
-
-## Screenshots
 
 ### Chat Interface
 Users ask natural language questions. Agent badges show which specialists responded. Payment badges link directly to Stellar Expert.
