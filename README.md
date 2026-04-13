@@ -2,7 +2,7 @@
 
 > **Multi-agent AI marketplace where agents don't just talk — they buy, sell, coordinate, and earn on Stellar.**
 
-Built for the **Stellar Agentic Hackathon 2026** | [Live Demo](https://kairos.vercel.app) | [Video Walkthrough](#demo-video)
+Built for the **Stellar Agentic Hackathon 2026** | [Live Demo](https://kairos-chatbox.vercel.app/) | [Video Walkthrough](https://www.loom.com/share/ffccc293cac9406aa178c2761097d462)
 
 ---
 
