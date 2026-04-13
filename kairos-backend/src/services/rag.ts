@@ -1,11 +1,11 @@
 /**
- * Lightweight RAG: embed local markdown corpus with Gemini, retrieve by cosine similarity,
- * inject excerpts into the user turn (no separate vector DB).
+ * Lightweight RAG:
+ * Previously used Gemini embeddings. After migrating to Groq, we avoid embedding APIs
+ * entirely and use deterministic keyword retrieval (BM25-like) over the same corpus.
  */
 
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { GoogleGenAI } from "@google/genai";
 import { collectRemoteSourceUrls, fetchUrlAsPlainText } from "./rag-fetch.js";
 
 export interface RagSource {
@@ -24,14 +24,9 @@ export interface RagAugmentation {
 type IndexedChunk = {
     source: string;
     text: string;
-    vec: Float32Array;
     url?: string;
+    tokens: string[];
 };
-
-/** Gemini Developer API: use `gemini-embedding-001` (not `text-embedding-004`, which is not exposed for embedContent on this API). */
-function getEmbedModel(): string {
-    return (process.env.KAIROS_RAG_EMBED_MODEL || "gemini-embedding-001").trim();
-}
 
 const DEFAULT_CORPUS_DIR = "rag-corpus";
 
@@ -40,20 +35,49 @@ function isRagDisabled(): boolean {
     return v === "0" || v === "false" || v === "off";
 }
 
-function l2Normalize(values: number[]): Float32Array {
-    let s = 0;
-    for (const x of values) s += x * x;
-    const inv = 1 / Math.sqrt(s || 1);
-    const out = new Float32Array(values.length);
-    for (let i = 0; i < values.length; i++) out[i] = values[i] * inv;
-    return out;
+function tokenize(text: string): string[] {
+    return (text || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter((t) => t.length >= 2 && t.length <= 32);
 }
 
-function cosineSim(a: Float32Array, b: Float32Array): number {
-    let s = 0;
-    const n = Math.min(a.length, b.length);
-    for (let i = 0; i < n; i++) s += a[i] * b[i];
-    return s;
+type RagIndex = {
+    chunks: IndexedChunk[];
+    df: Map<string, number>;
+    avgdl: number;
+};
+
+function buildDf(chunks: IndexedChunk[]): { df: Map<string, number>; avgdl: number } {
+    const df = new Map<string, number>();
+    let totalLen = 0;
+    for (const c of chunks) {
+        totalLen += c.tokens.length;
+        const seen = new Set(c.tokens);
+        for (const t of seen) df.set(t, (df.get(t) || 0) + 1);
+    }
+    const avgdl = chunks.length ? totalLen / chunks.length : 0;
+    return { df, avgdl };
+}
+
+function bm25Score(qTokens: string[], c: IndexedChunk, df: Map<string, number>, avgdl: number, N: number): number {
+    const k1 = 1.2;
+    const b = 0.75;
+    if (!qTokens.length) return 0;
+    const dl = c.tokens.length || 1;
+    const tf = new Map<string, number>();
+    for (const t of c.tokens) tf.set(t, (tf.get(t) || 0) + 1);
+    let score = 0;
+    for (const t of qTokens) {
+        const f = tf.get(t) || 0;
+        if (!f) continue;
+        const dfi = df.get(t) || 0;
+        const idf = Math.log(1 + (N - dfi + 0.5) / (dfi + 0.5));
+        const denom = f + k1 * (1 - b + b * (dl / (avgdl || 1)));
+        score += idf * ((f * (k1 + 1)) / denom);
+    }
+    return score;
 }
 
 /** One retrieval slot per canonical page/file — avoids duplicate "open" links for the same page. */
@@ -133,15 +157,7 @@ function chunkMarkdown(text: string, maxLen = 900, minLen = 48): string[] {
     return chunks;
 }
 
-let ragClient: GoogleGenAI | null = null;
-let indexPromise: Promise<IndexedChunk[] | null> | null = null;
-
-function getRagClient(): GoogleGenAI | null {
-    const key = process.env.GEMINI_API_KEY?.trim();
-    if (!key) return null;
-    if (!ragClient) ragClient = new GoogleGenAI({ apiKey: key });
-    return ragClient;
-}
+let indexPromise: Promise<RagIndex | null> | null = null;
 
 async function listCorpusFiles(): Promise<string[]> {
     const extra = (process.env.KAIROS_RAG_FILES || "")
@@ -210,22 +226,7 @@ async function loadChunksFromRemote(): Promise<Array<{ source: string; text: str
     return out;
 }
 
-async function embedTexts(
-    ai: GoogleGenAI,
-    texts: string[],
-    taskType: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY"
-): Promise<Float32Array[]> {
-    if (texts.length === 0) return [];
-    const res = await ai.models.embedContent({
-        model: getEmbedModel(),
-        contents: texts,
-        config: { taskType },
-    });
-    const list = res.embeddings || [];
-    return list.map((e) => l2Normalize(e.values || []));
-}
-
-async function buildIndex(ai: GoogleGenAI): Promise<IndexedChunk[] | null> {
+async function buildIndex(): Promise<RagIndex | null> {
     const [localPieces, remotePieces] = await Promise.all([loadChunksFromDisk(), loadChunksFromRemote()]);
     const pieces = [...localPieces, ...remotePieces];
     if (pieces.length === 0) {
@@ -235,35 +236,23 @@ async function buildIndex(ai: GoogleGenAI): Promise<IndexedChunk[] | null> {
         return null;
     }
 
-    const batchSize = Math.max(1, Math.min(16, Number(process.env.KAIROS_RAG_EMBED_BATCH || 12)));
-    const indexed: IndexedChunk[] = [];
+    const chunks: IndexedChunk[] = pieces.map((p) => ({
+        source: p.source,
+        text: p.text,
+        url: p.url,
+        tokens: tokenize(p.text),
+    }));
 
-    for (let i = 0; i < pieces.length; i += batchSize) {
-        const batch = pieces.slice(i, i + batchSize);
-        const vecs = await embedTexts(
-            ai,
-            batch.map((b) => b.text),
-            "RETRIEVAL_DOCUMENT"
-        );
-        for (let j = 0; j < batch.length; j++) {
-            indexed.push({
-                source: batch[j].source,
-                text: batch[j].text,
-                vec: vecs[j],
-                url: batch[j].url,
-            });
-        }
-    }
-
+    const { df, avgdl } = buildDf(chunks);
     console.log(
-        `[RAG] indexed ${indexed.length} chunks (${localPieces.length} local + ${remotePieces.length} remote text splits)`
+        `[RAG] indexed ${chunks.length} chunks (${localPieces.length} local + ${remotePieces.length} remote text splits)`
     );
-    return indexed;
+    return { chunks, df, avgdl };
 }
 
-function ensureIndex(ai: GoogleGenAI): Promise<IndexedChunk[] | null> {
+function ensureIndex(): Promise<RagIndex | null> {
     if (!indexPromise) {
-        indexPromise = buildIndex(ai).catch((e) => {
+        indexPromise = buildIndex().catch((e) => {
             console.error("[RAG] index build failed:", e);
             return null;
         });
@@ -277,11 +266,9 @@ function ensureIndex(ai: GoogleGenAI): Promise<IndexedChunk[] | null> {
  */
 export function warmRagIndex(): void {
     if (isRagDisabled()) return;
-    const ai = getRagClient();
-    if (!ai) return;
-    void ensureIndex(ai)
+    void ensureIndex()
         .then((idx) => {
-            if (idx?.length) console.log(`[RAG] corpus index ready (${idx.length} chunks)`);
+            if (idx?.chunks?.length) console.log(`[RAG] corpus index ready (${idx.chunks.length} chunks)`);
         })
         .catch(() => undefined);
 }
@@ -300,21 +287,16 @@ export async function retrieveRagAugmentation(userPrompt: string): Promise<RagAu
         return null;
     }
 
-    const ai = getRagClient();
-    if (!ai) return null;
-
-    // Cold-start index building can take several seconds (many embed calls). It must NOT
-    // share the same wall-clock budget as query embedding + scoring, or RAG almost always loses to timeout.
-    const index = await ensureIndex(ai);
-    if (!index || index.length === 0) return null;
+    const index = await ensureIndex();
+    if (!index || index.chunks.length === 0) return null;
 
     const budgetMs = Math.max(400, Number(process.env.KAIROS_RAG_BUDGET_MS || 2200));
 
     const retrieveOnly = async (): Promise<RagAugmentation | null> => {
-        const [qVec] = await embedTexts(ai, [trimmed], "RETRIEVAL_QUERY");
-        if (!qVec || qVec.length === 0) return null;
+        const qTokens = tokenize(trimmed);
+        if (qTokens.length === 0) return null;
 
-        const minScore = Number(process.env.KAIROS_RAG_MIN_SCORE || 0.32);
+        const minScore = Number(process.env.KAIROS_RAG_MIN_SCORE || 0.35);
         const poolLimit = Math.max(8, Math.min(100, Number(process.env.KAIROS_RAG_TOP_K || 24)));
         const maxInPrompt = Math.max(1, Math.min(5, Number(process.env.KAIROS_RAG_MAX_CHUNKS || 3)));
 
@@ -323,13 +305,11 @@ export async function retrieveRagAugmentation(userPrompt: string): Promise<RagAu
                 trimmed
             );
 
-        const ranked = index
+        const ranked = index.chunks
             .map((c) => {
-                let score = cosineSim(qVec, c.vec);
+                let score = bm25Score(qTokens, c, index.df, index.avgdl, index.chunks.length);
                 // Hard-boost Kairos internal knowledge for product questions
-                if (productKairosQuestion && c.source.includes("kairos-knowledge.md")) {
-                    score += 0.8; 
-                }
+                if (productKairosQuestion && c.source.includes("kairos-knowledge.md")) score += 2.5;
                 return { c, score };
             })
             .filter((x) => x.score >= minScore)

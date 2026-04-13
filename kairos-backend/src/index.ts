@@ -30,7 +30,8 @@ import {
     getAgentTreasuryBalance,
     getAgentTreasuryTrend,
     getPersistedLogicalIdsForAgent,
-    getRecentQueries
+    getRecentQueries,
+    ensureChatSessionById
 } from "./services/supabase.js";
 
 const app = express();
@@ -101,7 +102,7 @@ function resolveTxHashForAgent(
     return x402Transactions[agentId];
 }
 
-/** Micropayment memos use `x402:{geminiAgentId}:...` — map marketplace / dashboard id → memo prefix. */
+/** Micropayment memos use `x402:{agentId}:...` — map marketplace / dashboard id → memo prefix. */
 function x402MemoPrefixForDashboardAgent(agentId: string): string {
     const map: Record<string, string> = {
         news: "x402:news:",
@@ -223,7 +224,7 @@ async function horizonPaymentFromTx(txHash: string): Promise<{ code: string; amo
 
 // --- Configuration ---
 const PORT = process.env.PORT || 3001;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 // CORS — default: reflect the browser Origin (works with any Vercel/custom domain). STRICT_CORS=1 = allowlist only.
 const DEFAULT_ORIGINS = ["http://localhost:5173", "http://localhost:3000", "http://localhost:8080"];
@@ -309,12 +310,13 @@ app.use(express.json({ limit: '50mb' }));
 // --- Initialization ---
 
 // Initialize AI
-if (GEMINI_API_KEY) {
-    initGemini(GEMINI_API_KEY);
-    console.log("✅ Gemini AI initialized");
+if (GROQ_API_KEY) {
+    // Backwards-compatible init function name; now initializes Groq.
+    initGemini(GROQ_API_KEY);
+    console.log("✅ Groq AI initialized");
     warmRagIndex();
 } else {
-    console.warn("⚠️  GEMINI_API_KEY not set — AI queries will fail");
+    console.warn("⚠️  GROQ_API_KEY not set — AI queries will fail");
 }
 
 // Log Treasury Public Key for debug
@@ -342,7 +344,7 @@ app.get("/health", (req, res) => {
     res.json({
         status: "ok",
         network: config.stellar.network,
-        geminiEnabled: !!GEMINI_API_KEY,
+        llmEnabled: !!GROQ_API_KEY,
     });
 });
 
@@ -647,8 +649,23 @@ app.post("/query", queryLimiter, async (req, res) => {
             ragSources: result.ragSources,
         });
     } catch (error) {
-        console.error("Query error:", error);
-        res.status(500).json({ success: false, error: (error as Error).message });
+        const msg = (error as Error)?.message || "Unknown error";
+        console.error("Query error:", msg);
+        // Gemini permission / project issues should not look like a generic 500 in the UI.
+        const isGeminiDenied =
+            msg.includes("403") &&
+            (msg.toLowerCase().includes("denied access") ||
+                msg.toLowerCase().includes("permission") ||
+                msg.toLowerCase().includes("forbidden"));
+        if (isGeminiDenied) {
+            return res.status(503).json({
+                success: false,
+                error:
+                    "AI provider is currently unavailable (permission denied). Check your `GROQ_API_KEY` / Groq project access, then retry.",
+                provider: "groq",
+            });
+        }
+        res.status(500).json({ success: false, error: msg });
     }
 });
 
@@ -904,9 +921,9 @@ app.get("/chat/sessions/:sessionId/messages", async (req, res) => {
 app.post("/chat/sessions/:sessionId/messages", async (req, res) => {
     const { sessionId } = req.params;
     try {
-        const { id, content, is_user, escrow_id, tx_hash, tx_hashes, image_preview } = req.body;
+        const { id, content, is_user, escrow_id, tx_hash, tx_hashes, image_preview, walletAddress } = req.body;
 
-        const message = await saveMessage(sessionId, {
+        let message = await saveMessage(sessionId, {
             id,
             content,
             is_user,
@@ -915,6 +932,22 @@ app.post("/chat/sessions/:sessionId/messages", async (req, res) => {
             tx_hashes,
             image_preview,
         });
+
+        // Real fix: if session doesn't exist in DB (FK violation), persist it lazily then retry once.
+        if (!message && walletAddress) {
+            const ok = await ensureChatSessionById(sessionId, walletAddress, 'New Chat');
+            if (ok) {
+                message = await saveMessage(sessionId, {
+                    id,
+                    content,
+                    is_user,
+                    escrow_id,
+                    tx_hash,
+                    tx_hashes,
+                    image_preview,
+                });
+            }
+        }
         
         if (message) {
             return res.json({ success: true, message });

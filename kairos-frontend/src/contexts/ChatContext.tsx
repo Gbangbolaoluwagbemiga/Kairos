@@ -217,6 +217,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     tx_hash: message.txHash,
                     tx_hashes: message.txHashes,
                     image_preview: message.imagePreview,
+            walletAddress: address,
                 }),
             });
             // Refresh sessions to update titles
@@ -224,7 +225,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         } catch (e) {
             console.error('Failed to save message:', e);
         }
-    }, [currentSessionId, refreshSessions]);
+    }, [currentSessionId, refreshSessions, address]);
 
     const clearChat = useCallback(async () => {
         if (currentSessionId) {

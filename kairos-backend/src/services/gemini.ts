@@ -4,7 +4,8 @@
  * Remaining agents: Price Oracle, News Scout, Yield Optimizer, Tokenomics, Stellar Scout, Perp Stats
  */
 
-import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
+import type { GroqChatMessage, GroqTool } from "./groq-client.js";
+import { groqChatComplete } from "./groq-client.js";
 import { config } from "../config.js";
 import { fetchPrice, PriceData } from "./price-oracle.js";
 import { perpStatsService } from "./perp-stats/PerpStatsService.js";
@@ -331,7 +332,15 @@ async function withTimeoutOptional<T>(p: Promise<T>, ms: number): Promise<T | un
 // We still use this value when callers *optionally* await a hash.
 const PAYMENT_CAPTURE_TIMEOUT_MS = Number(process.env.KAIROS_PAYMENT_CAPTURE_TIMEOUT_MS || 2500);
 
-let genAI: GoogleGenerativeAI | null = null;
+let groqReady = false;
+
+const SchemaType = {
+    OBJECT: "object",
+    STRING: "string",
+    NUMBER: "number",
+    BOOLEAN: "boolean",
+    ARRAY: "array",
+} as const;
 
 // Track oracle usage for this session
 let oracleQueryCount = 0;
@@ -343,14 +352,15 @@ let newsScoutQueryCount = 0;
 let yieldOptimizerQueryCount = 0;
 
 export function initGemini(apiKey: string) {
-    genAI = new GoogleGenerativeAI(apiKey);
-    console.log(`[Provider] Gemini initialized with model: ${config.gemini.model}`);
+    // Backwards-compatible entrypoint: we no longer initialize Gemini.
+    // Groq is configured via env vars: GROQ_API_KEY / GROQ_MODEL.
+    // If caller passes a key, ignore it (do not log secrets).
+    groqReady = true;
+    console.log(`[Provider] Groq initialized with model: ${process.env.GROQ_MODEL || "llama-3.3-70b-versatile"}`);
 }
 
-// Request options with timeout for all Gemini API calls
-const GEMINI_REQUEST_OPTIONS = {
-    timeout: 60000, // 60 second timeout per request
-};
+// Timeout for Groq API calls
+const GROQ_TIMEOUT_MS = Number(process.env.GROQ_TIMEOUT_MS || 60000);
 
 export function getOracleQueryCount(): number {
     return oracleQueryCount;
@@ -1256,8 +1266,10 @@ export async function generateResponse(
     conversationHistory?: ConversationMessage[],
     receiptSink?: (agentId: string, txHash: string) => void
 ): Promise<GenerateResponseResult> {
-    if (!genAI) {
-        throw new Error("Gemini not initialized. Call initGemini first.");
+    if (!groqReady) {
+        // initGemini() is still called from index.ts for backwards compatibility.
+        // If a deployment bypasses that, fail loudly with correct env hint.
+        throw new Error("Groq not initialized. Set GROQ_API_KEY and restart.");
     }
 
     let ragSources: RagSource[] | undefined;
@@ -1421,96 +1433,106 @@ export async function generateResponse(
     }
 
     try {
-        const model = genAI.getGenerativeModel({
-            model: config.gemini.model,
-            tools: [
-                {
-                    functionDeclarations: [
-                        getPriceDataFunction,
-                        searchWebFunction,
-                        getProtocolStatsFunction,
-                        getBridgesFunction,
-                        getHacksFunction,
-                        getNewsFunction,
-                        getTrendingFunction,
-                        getYieldsFunction,
-                        getTokenomicsFunction,
-                        getGlobalPerpStatsFunction,
-                        getPerpMarketsFunction,
-                        getStellarStatsFunction,
-                        getStellarYieldsFunction,
-                        getStellarAccountFunction,
-                    ],
-                },
-            ],
-            systemInstruction: SYSTEM_PROMPT,
-        }, GEMINI_REQUEST_OPTIONS);
-
-        // Build content parts for the current message
-        const currentMessageParts: any[] = [];
-
-        // Add image if provided
+        const t0 = Date.now();
         if (imageData) {
-            currentMessageParts.push({
-                inlineData: {
-                    mimeType: imageData.mimeType,
-                    data: imageData.base64,
-                },
-            });
+            return {
+                response: "Image queries are temporarily disabled on the Groq model used by this deployment.",
+                agentsUsed: [],
+                x402Transactions: {},
+                a2aPayments: [],
+                partial: true,
+                ragSources,
+            };
         }
 
-        // Add text prompt (may include retrieved knowledge prefix from RAG)
-        if (prompt) {
-            currentMessageParts.push({ text: augmentedUserText });
-        } else if (imageData) {
-            currentMessageParts.push({ text: "Analyze this image and describe what you see. Provide helpful insights." });
+        const toTool = (fn: any): GroqTool => ({
+            type: "function",
+            function: {
+                name: fn.name,
+                description: fn.description,
+                parameters: fn.parameters,
+            },
+        });
+
+        const tools: GroqTool[] = [
+            toTool(getPriceDataFunction),
+            toTool(searchWebFunction),
+            toTool(getProtocolStatsFunction),
+            toTool(getBridgesFunction),
+            toTool(getHacksFunction),
+            toTool(getNewsFunction),
+            toTool(getTrendingFunction),
+            toTool(getYieldsFunction),
+            toTool(getTokenomicsFunction),
+            toTool(getGlobalPerpStatsFunction),
+            toTool(getPerpMarketsFunction),
+            toTool(getStellarStatsFunction),
+            toTool(getStellarYieldsFunction),
+            toTool(getStellarAccountFunction),
+        ];
+
+        const messages: GroqChatMessage[] = [{ role: "system", content: SYSTEM_PROMPT }];
+        if (conversationHistory?.length) {
+            for (const msg of conversationHistory) {
+                if (msg.role === "user") messages.push({ role: "user", content: msg.content });
+                else messages.push({ role: "assistant", content: msg.content });
+            }
         }
+        messages.push({ role: "user", content: augmentedUserText || (prompt || "").trim() });
 
-        // Initialize chat session
-        let chat;
-        if (conversationHistory && conversationHistory.length > 0) {
-            const history = conversationHistory.map(msg => ({
-                role: msg.role,
-                parts: [{ text: msg.content }],
-            }));
-            chat = model.startChat({ history });
-        } else {
-            chat = model.startChat({ history: [] });
-        }
-
-        // Send initial message
-        let result = await withRetry(() => chat.sendMessage(currentMessageParts));
-        let response = result.response;
-        let functionCalls = response.functionCalls();
-
-        // Debug logging
-        console.log(`[Gemini] Initial response - text: "${response.text()?.slice(0, 100) || 'empty'}", functionCalls: ${functionCalls?.length || 0}`);
-
-        // Loop to handle function calls (limit to 5 turns to prevent infinite loops)
         let turns = 0;
         const lastToolResultsByName: Record<string, any> = {};
-        while (functionCalls && functionCalls.length > 0 && turns < 5) {
-            turns++;
-            // Execute all function calls in this turn in parallel
-            const toolResults = await Promise.all(functionCalls.map((c: any) => executeToolCall(c)));
-            for (const tr of toolResults) {
-                lastToolResultsByName[tr.name] = wrapToolResult(tr.raw);
-            }
-            const functionResponses = toolResults.map((r) => ({
-                functionResponse: {
-                    name: r.name,
-                    response: { result: wrapToolResult(r.raw) },
-                },
-            }));
+        let completion = await withRetry(() =>
+            groqChatComplete({
+                messages,
+                tools,
+                toolChoice: "auto",
+                temperature: 0.2,
+                maxTokens: 650,
+                timeoutMs: Math.min(GROQ_TIMEOUT_MS, Math.max(8000, remainingMs() + 5000)),
+            })
+        );
+        console.log(`[Groq] first completion in ${Date.now() - t0}ms (toolCalls=${completion.toolCalls.length}, content=${completion.content ? "yes" : "no"})`);
 
-            // Send function responses back to model
-            if (functionResponses.length > 0) {
-                result = await withRetry(() => chat.sendMessage(functionResponses));
-                response = result.response;
-                functionCalls = response.functionCalls();
-            } else {
-                break;
-            }
+        while (completion.toolCalls.length > 0 && turns < 5) {
+            turns++;
+            // IMPORTANT: OpenAI-style tool calling requires an assistant message that contains `tool_calls`,
+            // followed by one `tool` message per tool_call_id. Without this, models sometimes return empty final text.
+            messages.push({ role: "assistant", tool_calls: completion.toolCalls });
+
+            await Promise.all(
+                completion.toolCalls.map(async (tc) => {
+                    let args: any = {};
+                    try {
+                        args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+                    } catch {
+                        args = {};
+                    }
+                    const r = await executeToolCall({ name: tc.function.name, args });
+                    lastToolResultsByName[r.name] = wrapToolResult(r.raw);
+                    messages.push({
+                        role: "tool",
+                        tool_call_id: tc.id,
+                        content: r.raw,
+                    });
+                    return r;
+                })
+            );
+
+            // If we ran out of time budget, stop tool loop and let fallback logic handle it.
+            if (remainingMs() <= 0) break;
+
+            completion = await withRetry(() =>
+                groqChatComplete({
+                    messages,
+                    tools,
+                    toolChoice: "auto",
+                    temperature: 0.2,
+                    maxTokens: 650,
+                    timeoutMs: Math.min(GROQ_TIMEOUT_MS, Math.max(8000, remainingMs() + 5000)),
+                })
+            );
+            console.log(`[Groq] follow-up completion in ${Date.now() - t0}ms (turns=${turns}, toolCalls=${completion.toolCalls.length}, content=${completion.content ? "yes" : "no"})`);
         }
 
         // ─── Agent-to-Agent Sub-Payments ────────────────────────────────────────
@@ -1534,19 +1556,11 @@ export async function generateResponse(
         }
         // ────────────────────────────────────────────────────────────────────────
 
-        let responseText = "";
-        try {
-            responseText = response.text();
-        } catch (textErr: any) {
-            console.error(`[Gemini] ⚠️ Error extracting response text:`, textErr?.message);
-            // If the model generated a response but the SDK fails to parse it
-            // (e.g. because of safety filters on the last turn)
-            if (response.candidates?.[0]?.content?.parts?.[0]?.text) {
-                responseText = response.candidates[0].content.parts[0].text;
-            }
-        }
+        const responseText = completion.content || "";
 
-        const finalText = responseText || "I've processed the market data but am unable to generate a summary at this moment. You can see the raw data in the activity feed below.";
+        const finalText =
+            responseText ||
+            "I've processed the market data but am unable to generate a summary at this moment. You can see the raw data in the activity feed below.";
 
         // If Gemini fails to produce final text, but we have deterministic tool output,
         // generate a high-quality fallback response for the most common demo tool (Price Oracle).
@@ -1575,6 +1589,25 @@ export async function generateResponse(
             };
         }
 
+        // If Gemini returns empty text AND the Price Oracle tool errored/timed out,
+        // return a clear, actionable message instead of the generic fallback.
+        if (!responseText && lastToolResultsByName.getPriceData?.error) {
+            const e = lastToolResultsByName.getPriceData?.error;
+            const sym = String((prompt || "").match(/\b[A-Za-z0-9]{2,10}\b/g)?.slice(-1)?.[0] || "this token").toUpperCase();
+            const isTimeout = typeof e === "string" && e.includes("timeout");
+            const hint = isTimeout
+                ? "The price feed timed out (CoinGecko can be slow). Please retry."
+                : "The price feed had a temporary issue. Please retry.";
+            return {
+                response: `I couldn’t fetch a fresh price for **${sym}** right now. ${hint}`,
+                agentsUsed: Array.from(agentsUsed),
+                x402Transactions,
+                a2aPayments: currentA2APayments,
+                partial: true,
+                ragSources,
+            };
+        }
+
         // News: if the model returned empty text but we have articles, render them directly.
         if (!responseText && lastToolResultsByName.getNews?.articles?.length) {
             const d = lastToolResultsByName.getNews as { articles: Array<{ title: string; source?: string; timeAgo?: string; link?: string }> };
@@ -1591,6 +1624,29 @@ export async function generateResponse(
                 partial: false,
                 ragSources,
             };
+        }
+
+        // Bridges: if the model returned empty text but we have deterministic bridge data, render it.
+        if (!responseText && lastToolResultsByName.getBridges && !lastToolResultsByName.getBridges.error) {
+            const d = lastToolResultsByName.getBridges as any;
+            const bridges = Array.isArray(d?.bridges) ? d.bridges : Array.isArray(d?.result?.bridges) ? d.result.bridges : [];
+            if (bridges.length) {
+                const top = bridges.slice(0, 8).map((b: any, i: number) => {
+                    const name = b.name || b.bridge || b.protocol || "Bridge";
+                    const tvl = b.tvl != null ? `$${Number(b.tvl).toLocaleString()}` : undefined;
+                    const chains = Array.isArray(b.chains) ? b.chains.slice(0, 6).join(", ") : undefined;
+                    const bits = [tvl ? `TVL ${tvl}` : null, chains ? `Chains: ${chains}` : null].filter(Boolean).join(" · ");
+                    return `${i + 1}. **${name}**${bits ? ` — ${bits}` : ""}`;
+                });
+                return {
+                    response: `### Top bridges (by TVL)\n\n${top.join("\n\n")}`,
+                    agentsUsed: Array.from(agentsUsed),
+                    x402Transactions,
+                    a2aPayments: currentA2APayments,
+                    partial,
+                    ragSources,
+                };
+            }
         }
 
         const trimmed = (responseText || "").trim();

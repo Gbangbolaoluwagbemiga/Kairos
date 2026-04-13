@@ -200,7 +200,8 @@ The `stellar-mpp-sdk` provides primitives for:
 ### Environment Variables
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GEMINI_API_KEY` | Yes | Google AI Studio API key |
+| `GROQ_API_KEY` | Yes | Groq API key |
+| `GROQ_MODEL` | No | Groq model id (default `llama-3.3-70b-versatile`) |
 | `STELLAR_SPONSOR_SECRET` | Yes | Treasury private key (S...) |
 | `USDC_ISSUER_ADDRESS` | No | USDC issuer (defaults to treasury) |
 | `AGENT_REGISTRY_CONTRACT_ID` | No | Soroban registry contract |

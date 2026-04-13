@@ -494,7 +494,10 @@ export async function fetchPrice(symbol: string): Promise<PriceData | null> {
             headers['x-cg-demo-api-key'] = COINGECKO_API_KEY;
         }
 
-        const response = await fetch(url, { headers });
+        const controller = new AbortController();
+        const timeoutMs = Math.max(2500, Number(process.env.COINGECKO_TIMEOUT_MS || 8000));
+        const t = setTimeout(() => controller.abort(), timeoutMs);
+        const response = await fetch(url, { headers, signal: controller.signal }).finally(() => clearTimeout(t));
 
         if (!response.ok) {
             console.error(`[Oracle] CoinGecko API error: ${response.status}`);

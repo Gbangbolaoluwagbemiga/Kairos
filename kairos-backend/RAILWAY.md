@@ -46,7 +46,8 @@ In **Variables**, add at least:
 
 | Variable | Required | Notes |
 |----------|----------|--------|
-| `GEMINI_API_KEY` | Yes | Google AI key |
+| `GROQ_API_KEY` | Yes | Groq API key |
+| `GROQ_MODEL` | No | Groq model id (default `llama-3.3-70b-versatile`) |
 | `STELLAR_SPONSOR_SECRET` | Yes for on-chain features | `S...` secret seed |
 | `STELLAR_NETWORK` | Optional | `testnet` (default) |
 | `SUPABASE_URL` | Optional | If you use Supabase |
@@ -99,7 +100,7 @@ Railway should detect `package.json` **only after** root is set to `kairos-backe
 | `Error creating build plan with Railpack` | Set **Root Directory** to `kairos-backend` and/or use **Dockerfile** builder. |
 | `npm ci` / `package.json` and lock file **not in sync** | Run **`npm install`** inside `kairos-backend`, commit **`package-lock.json`**, and redeploy. Railway uses `npm ci`, which requires an exact match. |
 | CORS / `Failed to fetch` / `502` from browser | The API sets **`trust proxy`** for Railway and uses **permissive CORS** by default (`Origin` reflected). Set **`STRICT_CORS=1`** only if you want an allowlist (`ALLOWED_ORIGINS` + `*.vercel.app`). If you still see **502**, open **Deploy Logs** (crash/OOM) — not a CORS-only issue. |
-| `502` / crash on boot | Check **Deploy Logs** for missing `GEMINI_API_KEY` or invalid secrets. |
+| `502` / crash on boot | Check **Deploy Logs** for missing `GROQ_API_KEY` or invalid secrets. |
 | DB / Supabase errors | Set `SUPABASE_URL` and `SUPABASE_ANON_KEY`; optional if you rely on in-memory fallback. |
 
 ---
@@ -117,7 +118,7 @@ From the **`kairos-backend`** folder:
 
 ```bash
 docker build -t kairos-api .
-docker run --rm -p 3001:3001 -e GEMINI_API_KEY=your_key kairos-api
+docker run --rm -p 3001:3001 -e GROQ_API_KEY=your_key -e GROQ_MODEL=llama-3.3-70b-versatile kairos-api
 curl http://localhost:3001/health
 ```
 

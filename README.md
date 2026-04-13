@@ -42,7 +42,7 @@ kairos-backend/      Node.js + Express + TypeScript (deployed on Railway)
     index.ts              API routes, activity feed, treasury endpoints
     config.ts             All agent addresses, network config, pricing
     services/
-      gemini.ts           AI orchestrator — tool routing, x402 payments
+      gemini.ts           AI orchestrator (Groq) — tool routing, x402 payments
       search.ts           Google Search grounding (Gemini 2.0 Flash)
       agent-registry.ts   Soroban registry (simulation read) with env-driven fallback
       price-oracle.ts     CoinGecko integration
@@ -111,7 +111,8 @@ Frontend runs at `http://localhost:5173`, backend at `http://localhost:3001`.
 
 | Variable | Description |
 |---|---|
-| `GEMINI_API_KEY` | Google AI Studio API key |
+| `GROQ_API_KEY` | Groq API key (OpenAI-compatible) |
+| `GROQ_MODEL` | Groq model id (default `llama-3.3-70b-versatile`) |
 | `STELLAR_SPONSOR_SECRET` | Treasury private key (S...) |
 | `USDC_ISSUER_ADDRESS` | Treasury public key (= USDC issuer in demo mode) |
 

@@ -127,11 +127,59 @@ export async function deleteChatSession(sessionId: string, walletAddress: string
 
 // ============ Chat Messages ============
 
+// If a session is created in-memory (Supabase unavailable / RLS / network),
+// attempts to insert messages will violate FK constraints. Cache those failures
+// to avoid spamming logs on every message.
+const missingSessionIds = new Set<string>();
+
+export function markChatSessionPresent(sessionId: string): void {
+    missingSessionIds.delete(sessionId);
+}
+
+/**
+ * Ensure a chat session row exists for a given id.
+ * This fixes the "memory-only session id" FK problem by persisting the session lazily
+ * when the first message arrives (server-side).
+ */
+export async function ensureChatSessionById(
+    sessionId: string,
+    walletAddress: string,
+    title: string = 'New Chat'
+): Promise<boolean> {
+    if (!supabase) return false;
+    if (!sessionId) return false;
+    if (!walletAddress) return false;
+
+    try {
+        const { error } = await supabase
+            .from('chat_sessions')
+            .upsert(
+                {
+                    id: sessionId,
+                    wallet_address: walletAddress.toLowerCase(),
+                    title,
+                    updated_at: new Date().toISOString(),
+                } as any,
+                { onConflict: 'id', ignoreDuplicates: true } as any
+            );
+        if (error) {
+            console.error('[Supabase] ensureChatSessionById failed:', error);
+            return false;
+        }
+        markChatSessionPresent(sessionId);
+        return true;
+    } catch (e: any) {
+        console.error('[Supabase] ensureChatSessionById exception:', e?.message || e);
+        return false;
+    }
+}
+
 export async function saveMessage(
     sessionId: string,
     message: Pick<ChatMessage, 'id' | 'content' | 'is_user' | 'escrow_id' | 'tx_hash' | 'tx_hashes' | 'image_preview'>
 ): Promise<ChatMessage | null> {
     if (!supabase) return null;
+    if (missingSessionIds.has(sessionId)) return null;
 
     const { data, error } = await supabase
         .from('chat_messages')
@@ -149,6 +197,11 @@ export async function saveMessage(
         .single();
 
     if (error) {
+        // FK violation means the session id doesn't exist in chat_sessions (often memory-only session).
+        if ((error as any).code === '23503') {
+            missingSessionIds.add(sessionId);
+            return null;
+        }
         console.error('[Supabase] Failed to save message:', error);
         return null;
     }
