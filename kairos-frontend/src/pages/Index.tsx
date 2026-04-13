@@ -136,7 +136,7 @@ function HeroState({ onSend, isConnected }: { onSend: (msg: string) => void; isC
             <Zap className="w-3 h-3 text-yellow-400" />Stellar Testnet
           </span>
           <a
-            href="https://stellar.expert/explorer/testnet"
+            href="https://stellar.expert/explorer/testnet/account/GDCUS2HDVOCQC5TPZ7OHTCDMJ4ZLZYHLEUUE6WD5IRWQQ2M7YMPMWZXS"
             target="_blank"
             rel="noopener noreferrer"
             className="glass-btn px-3 py-1.5 text-xs text-[hsl(195_90%_55%)] flex items-center gap-1 hover:brightness-125 transition-all"
